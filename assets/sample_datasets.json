@@ -1,0 +1,43 @@
+{
+  "description": "Example datasets for demonstrating every supported algorithm in AlgoVision Studio. Values are 1-1000, sizes 10-100.",
+  "samples": [
+    {
+      "name": "Classic Demo (Bubble/Selection/Insertion)",
+      "recommended_for": ["bubble", "selection", "insertion"],
+      "values": [64, 34, 25, 12, 22, 11, 90, 2, 70, 45]
+    },
+    {
+      "name": "Reference Array (15 elements)",
+      "recommended_for": ["heap", "quick", "merge"],
+      "values": [64, 34, 25, 12, 22, 11, 90, 2, 70, 45, 30, 36, 15, 10, 5]
+    },
+    {
+      "name": "Reverse Sorted (worst case)",
+      "recommended_for": ["bubble", "insertion", "quick"],
+      "values": [100, 90, 80, 70, 60, 50, 40, 30, 20, 10]
+    },
+    {
+      "name": "Nearly Sorted (best case)",
+      "recommended_for": ["bubble", "insertion"],
+      "values": [10, 20, 30, 45, 40, 50, 60, 70, 80, 90]
+    },
+    {
+      "name": "Many Duplicates (stability demo)",
+      "recommended_for": ["merge", "quick", "heap"],
+      "values": [7, 3, 7, 3, 5, 5, 1, 7, 3, 1, 5, 7]
+    },
+    {
+      "name": "Heap Showcase",
+      "recommended_for": ["heap"],
+      "values": [90, 70, 64, 45, 30, 25, 36, 12, 15, 10, 22, 11, 2, 7, 5]
+    },
+    {
+      "name": "Large Dataset (50 elements)",
+      "recommended_for": ["merge", "quick", "heap"],
+      "values": [487, 12, 933, 245, 678, 34, 812, 156, 399, 71, 528, 264, 905, 47,
+                 619, 183, 750, 22, 461, 338, 594, 108, 827, 275, 63, 419, 986, 231,
+                 552, 97, 704, 388, 145, 863, 209, 476, 31, 641, 318, 89, 573, 254,
+                 918, 167, 402, 736, 55, 289, 630, 124]
+    }
+  ]
+}

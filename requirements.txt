@@ -1,0 +1,8 @@
+# AlgoVision Studio - runtime dependencies
+# Python 3.11 or later required.
+
+PyQt6>=6.6
+matplotlib>=3.7
+
+# matplotlib pulls in numpy/pillow automatically; pillow is also used to
+# generate the window/taskbar icon from the logo if regenerated.

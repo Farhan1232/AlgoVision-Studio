@@ -1,0 +1,27 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# PyInstaller build output (NOTE: algovision.spec IS committed)
+build/
+build_*/
+dist/
+dist_*/
+release/
+
+# App runtime output
+*_ExecutionReport.csv
+*_session.json
+algovision_session.json
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
