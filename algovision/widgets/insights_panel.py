@@ -38,8 +38,10 @@ class InsightsPanel(QWidget):
         t = self.theme
         while self.vbox.count():
             it = self.vbox.takeAt(0)
-            if it.widget():
-                it.widget().deleteLater()
+            w = it.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
 
         def block(icon: str, label: str, value_html: str):
             w = QWidget()

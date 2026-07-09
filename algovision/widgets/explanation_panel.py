@@ -6,6 +6,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel
 
 from ..theme.palette import Theme
+from ..theme import scale as uiscale
 from ..core.frames import Frame
 from .common import info_box
 
@@ -24,7 +25,6 @@ class ExplanationPanel(QWidget):
         row.setSpacing(12)
 
         self.icon = QLabel("ℹ️")
-        self.icon.setStyleSheet("font-size:18px;")
         self.icon.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         text_col = QVBoxLayout()
@@ -46,6 +46,9 @@ class ExplanationPanel(QWidget):
         self.theme = theme
         self._restyle()
 
+    def apply_scale(self, s: float) -> None:
+        self._restyle()
+
     def update_from(self, frame: Frame) -> None:
         if frame is None:
             return
@@ -54,5 +57,7 @@ class ExplanationPanel(QWidget):
 
     def _restyle(self) -> None:
         t = self.theme
-        self.title.setStyleSheet(f"color:{t.accent_2}; font-weight:700; font-size:14px;")
+        self.icon.setStyleSheet(f"font-size:{uiscale.fs(18)}px;")
+        self.title.setStyleSheet(
+            f"color:{t.accent_2}; font-weight:700; font-size:{uiscale.fs(14)}px;")
         self.detail.setStyleSheet(f"color:{t.text_secondary};")

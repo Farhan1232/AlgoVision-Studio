@@ -1,18 +1,26 @@
 """Single Algorithm workspace (PRD Sections 3, 5, 8).
 
 Composes the Sorting Visualization (Numbered Block View + optional Heap Tree
-View), Explanation Panel, Timeline, Statistics Dashboard, Code Viewer and
-Algorithm Insights, all driven by one :class:`Player`.
+View), Explanation Panel, Statistics Dashboard, Code Viewer, Algorithm Insights
+and the operation Timeline, all driven by one :class:`Player`.
+
+The layout mirrors the reference images: a compact header, a visualization band
+(array | heap tree) that scales to the window, a plain-language explanation
+beneath it, and a four-column bottom row
+(Statistics | Code Viewer | Algorithm Insights | Timeline).  Nothing uses a
+fixed minimum that would force scrollbars - every band shares the height via
+stretch factors so the whole workspace fits a standard desktop window.
 """
 
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QSizePolicy
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy
 )
 
 from ..theme.palette import Theme
+from ..theme import scale as uiscale
 from ..core import registry
 from ..core.registry import AlgorithmInfo
 from ..core.player import Player
@@ -20,6 +28,7 @@ from ..widgets import (
     ArrayView, HeapTreeView, CodeViewer, StatsDashboard,
     InsightsPanel, ExplanationPanel, Timeline, Legend,
 )
+from ..widgets.timeline import build_milestones
 from ..widgets.common import card, card_with_title
 
 
@@ -41,19 +50,19 @@ class SingleView(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 12, 14, 12)
-        root.setSpacing(10)
+        root.setSpacing(9)
 
         root.addWidget(self._build_header())
         root.addWidget(self._build_visualization(), 5)
-        root.addWidget(self.explanation)
-        root.addWidget(self._build_timeline_card())
+        root.addWidget(self._build_explanation_card())
         root.addWidget(self._build_bottom(), 4)
 
     # -- construction -------------------------------------------------------
     def _build_header(self) -> QWidget:
         c = card()
+        c.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         lay = QHBoxLayout(c)
-        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setContentsMargins(14, 9, 14, 9)
         lay.setSpacing(12)
 
         self.title = QLabel("VISUALIZATION")
@@ -63,13 +72,14 @@ class SingleView(QWidget):
         self.steps = QLabel("Step 0 / 0"); self.steps.setProperty("role", "muted")
         self.phase = QLabel(""); self.phase.setProperty("role", "muted")
         self.operation = QLabel(""); self.operation.setProperty("role", "muted")
+        self.operation.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
 
         lay.addWidget(self.title)
         lay.addWidget(self.badge)
         lay.addWidget(self.steps)
         lay.addWidget(self.phase)
-        lay.addWidget(self.operation)
-        lay.addStretch(1)
+        lay.addWidget(self.operation, 1)
+        lay.addStretch(0)
 
         self.dataset_lbl = QLabel("Dataset:")
         self.dataset_lbl.setProperty("role", "muted")
@@ -86,8 +96,8 @@ class SingleView(QWidget):
     def _build_visualization(self) -> QWidget:
         self.viz_card = card()
         outer = QVBoxLayout(self.viz_card)
-        outer.setContentsMargins(14, 12, 14, 12)
-        outer.setSpacing(8)
+        outer.setContentsMargins(14, 10, 14, 10)
+        outer.setSpacing(7)
 
         head = QHBoxLayout()
         self.array_title = QLabel("ARRAY VIEW")
@@ -101,35 +111,32 @@ class SingleView(QWidget):
 
         self.array_view = ArrayView(self.theme)
         self.heap_view = HeapTreeView(self.theme)
-        self.array_view.setMinimumHeight(200)
-        self.heap_view.setMinimumHeight(200)
+        self.array_view.setMinimumHeight(150)
+        self.heap_view.setMinimumHeight(150)
+        self.array_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.heap_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.array_view.blockClicked.connect(self._cross_highlight)
         self.heap_view.nodeClicked.connect(self._cross_highlight)
 
-        self.viz_split = QSplitter(Qt.Orientation.Horizontal)
-        self.viz_split.addWidget(self.array_view)
-        self.viz_split.addWidget(self.heap_view)
-        self.viz_split.setSizes([560, 440])
-        outer.addWidget(self.viz_split, 1)
+        self.viz_row = QHBoxLayout()
+        self.viz_row.setSpacing(12)
+        self.viz_row.addWidget(self.array_view, 6)
+        self.viz_row.addWidget(self.heap_view, 5)
+        outer.addLayout(self.viz_row, 1)
 
         self.legend = Legend(self.theme)
         outer.addWidget(self.legend)
-
-        self.explanation = ExplanationPanel(self.theme)
         return self.viz_card
 
-    def _build_timeline_card(self) -> QWidget:
-        frame, lay = card_with_title("Timeline")
-        lay.setContentsMargins(14, 8, 14, 10)
-        self.timeline = Timeline(self.theme)
-        self.timeline.seekRequested.connect(self.player.seek)
-        lay.addWidget(self.timeline)
-        self._timeline_card = frame
-        return frame
+    def _build_explanation_card(self) -> QWidget:
+        self.explanation = ExplanationPanel(self.theme)
+        self.explanation.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        return self.explanation
 
     def _build_bottom(self) -> QWidget:
         container = QWidget()
-        container.setMinimumHeight(240)
+        self._bottom_container = container
+        container.setMinimumHeight(210)
         row = QHBoxLayout(container)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(10)
@@ -146,9 +153,15 @@ class SingleView(QWidget):
         self.insights = InsightsPanel(self.theme)
         ins_lay.addWidget(self.insights)
 
-        row.addWidget(stats_card, 3)
-        row.addWidget(self.code_card, 4)
-        row.addWidget(insights_card, 4)
+        self.timeline_card, tl_lay = card_with_title("Timeline")
+        self.timeline = Timeline(self.theme, style="milestones")
+        self.timeline.seekRequested.connect(self.player.seek)
+        tl_lay.addWidget(self.timeline)
+
+        row.addWidget(stats_card, 4)
+        row.addWidget(self.code_card, 5)
+        row.addWidget(insights_card, 5)
+        row.addWidget(self.timeline_card, 4)
         return container
 
     # -- data / lifecycle ---------------------------------------------------
@@ -169,8 +182,11 @@ class SingleView(QWidget):
         is_heap = info.uses_heap_tree
         self.heap_view.setVisible(is_heap)
         self.tree_title.setVisible(is_heap)
+
+        self.stats.set_meta(info.name, len(dataset))
         self.stats.clear()
         self.timeline.configure(self.player.count, 0)
+        self.timeline.set_milestones(build_milestones(frames))
         self._on_frame(0)
 
     # -- playback delegation ------------------------------------------------
@@ -224,6 +240,7 @@ class SingleView(QWidget):
         self.badge.setProperty("role", f"badge-{status.lower()}")
         self.badge.style().unpolish(self.badge)
         self.badge.style().polish(self.badge)
+        self.stats.set_status(status)
         self.statusChanged.emit(status)
 
     def _cross_highlight(self, index: int) -> None:
@@ -237,3 +254,13 @@ class SingleView(QWidget):
         for w in (self.array_view, self.heap_view, self.code, self.stats,
                   self.insights, self.explanation, self.timeline, self.legend):
             w.set_theme(theme)
+
+    # -- responsive scaling -------------------------------------------------
+    def apply_scale(self, s: float) -> None:
+        self.array_view.setMinimumHeight(uiscale.sp(150))
+        self.heap_view.setMinimumHeight(uiscale.sp(150))
+        self._bottom_container.setMinimumHeight(uiscale.sp(210))
+        for w in (self.explanation, self.timeline, self.code, self.legend,
+                  self.stats, self.insights):
+            if hasattr(w, "apply_scale"):
+                w.apply_scale(s)

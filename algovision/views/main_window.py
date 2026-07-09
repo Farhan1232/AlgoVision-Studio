@@ -4,15 +4,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPixmap, QKeySequence, QShortcut, QIcon
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QPixmap, QKeySequence, QShortcut, QIcon, QGuiApplication, QFont
+from PyQt6.QtWidgets import QApplication
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QStackedWidget, QFileDialog, QMessageBox, QScrollArea, QFrame
+    QStackedWidget, QFileDialog, QMessageBox
 )
 
 from ..theme.palette import get_theme
 from ..theme.stylesheet import build_qss
+from ..theme import scale as uiscale
 from ..config import (
     APP_NAME, APP_TAGLINE, APP_VERSION, DEFAULT_DATASET, ARRAY_SIZE_DEFAULT,
     SHORTCUTS, SPEED_CHOICES, ARRAY_SIZE_MIN,
@@ -40,10 +42,22 @@ class MainWindow(QMainWindow):
         self.dataset_label = "Sample Array"
         self.mode = "single"
         self._presentation: PresentationView | None = None
+        self._scale = 1.0
+        # Throttle scale recomputation during continuous resizing/maximizing.
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(40)
+        self._resize_timer.timeout.connect(self._recompute_scale)
 
         self.setWindowTitle(APP_NAME)
-        self.resize(1360, 860)
-        self.setMinimumSize(960, 640)
+        # A modest minimum keeps every panel usable; dense panels (Statistics,
+        # Code, Insights, Timeline) scroll internally rather than overlap when
+        # the window is short, so the app stays comfortable on small laptops too.
+        self.setMinimumSize(1024, 620)
+        # Open sized to FIT the available screen (never larger than it) and
+        # centred, so the window never opens off-screen on small laptops
+        # (e.g. 1366x768) and the maximize / restore buttons behave correctly.
+        self._open_fit_to_screen(1360, 850)
         icon = ASSETS / "icon.ico"
         if not icon.exists():
             icon = ASSETS / "logo.png"
@@ -58,7 +72,26 @@ class MainWindow(QMainWindow):
         # initial load
         self.sidebar.select_algorithm(self.algorithm_key)
         self.sidebar.set_size(len(self.dataset))
+        self.sidebar.set_dataset_text(self.dataset)
         self._load_single()
+
+        # initial proportional scale for the opened window size
+        self._scale = uiscale.compute_scale(self.width(), self.height())
+        self._apply_scale()
+
+    def _open_fit_to_screen(self, want_w: int, want_h: int) -> None:
+        """Resize to the preferred size but never larger than the screen, and
+        centre the window on the available desktop area."""
+        screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            w = max(self.minimumWidth(), min(want_w, avail.width() - 20))
+            h = max(self.minimumHeight(), min(want_h, avail.height() - 20))
+            self.resize(w, h)
+            self.move(avail.x() + (avail.width() - w) // 2,
+                      avail.y() + (avail.height() - h) // 2)
+        else:
+            self.resize(want_w, want_h)
 
     # -- UI construction ----------------------------------------------------
     def _build_ui(self):
@@ -84,30 +117,20 @@ class MainWindow(QMainWindow):
         self.single = SingleView(self.theme)
         self.compare = CompareView(self.theme)
         self.report = ReportView(self.theme)
-        # Wrap single/compare in scroll areas so the workspace stays usable and
-        # scrollable at any window size instead of clipping (responsiveness).
-        self.single.setMinimumSize(1000, 760)
-        self.compare.setMinimumSize(1120, 800)
-        self.stack.addWidget(self._scrollable(self.single))   # 0
-        self.stack.addWidget(self._scrollable(self.compare))  # 1
-        self.stack.addWidget(self.report)                     # 2 (already a QScrollArea)
+        # The single/compare workspaces are fully responsive: they resize with
+        # the window via internal stretch factors, so they no longer need a
+        # scroll-area wrapper or fixed minimum sizes (which used to clip panels).
+        self.stack.addWidget(self.single)    # 0
+        self.stack.addWidget(self.compare)   # 1
+        self.stack.addWidget(self.report)    # 2 (a QScrollArea - report is long)
         mid.addWidget(self.stack, 1)
 
         outer.addWidget(middle, 1)
         outer.addWidget(self._build_bottombar())
 
-    @staticmethod
-    def _scrollable(widget: QWidget) -> QScrollArea:
-        sa = QScrollArea()
-        sa.setWidgetResizable(True)
-        sa.setFrameShape(QFrame.Shape.NoFrame)
-        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        sa.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        sa.setWidget(widget)
-        return sa
-
     def _build_topbar(self):
         bar = QWidget()
+        self.topbar = bar
         bar.setObjectName("TopBar")
         bar.setFixedHeight(62)
         h = QHBoxLayout(bar)
@@ -140,6 +163,7 @@ class MainWindow(QMainWindow):
 
     def _build_bottombar(self):
         bar = QWidget()
+        self.bottombar = bar
         bar.setObjectName("BottomBar")
         bar.setFixedHeight(52)
         h = QHBoxLayout(bar)
@@ -171,6 +195,7 @@ class MainWindow(QMainWindow):
         sb.shuffleRequested.connect(self._on_shuffle)
         sb.sizeChanged.connect(self._on_size)
         sb.speedChanged.connect(self._on_speed)
+        sb.customArraySubmitted.connect(self._on_custom_array)
 
         self.single.editArrayRequested.connect(self._open_edit_array)
         self.single.statusChanged.connect(self._on_status)
@@ -273,11 +298,20 @@ class MainWindow(QMainWindow):
         self.dataset_label = "Random Array"
         self._reload_active()
 
+    def _on_custom_array(self, values: list):
+        """Apply a validated custom array from the sidebar (available in all
+        modes, including Comparison Mode) - PRD 7.3."""
+        self.dataset = list(values)
+        self.dataset_label = "Custom Array"
+        self.sidebar.set_size(len(self.dataset))
+        self._reload_active()
+
     def _on_speed(self, mult: float):
         self.single.set_speed(mult)
         self.compare.set_speed(mult)
 
     def _reload_active(self):
+        self.sidebar.set_dataset_text(self.dataset)
         if self.mode == "compare":
             self._load_compare()
         else:
@@ -313,15 +347,59 @@ class MainWindow(QMainWindow):
         self.theme_btn.setText("☀  Theme" if self.theme.is_dark else "☾  Theme")
 
     def apply_theme(self):
-        self.setStyleSheet(build_qss(self.theme))
+        self.setStyleSheet(build_qss(self.theme, self._scale))
+
+    # -- responsive scaling -------------------------------------------------
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        # Debounce: only recompute once resizing settles.
+        self._resize_timer.start()
+
+    def _recompute_scale(self):
+        s = uiscale.compute_scale(self.width(), self.height())
+        if abs(s - self._scale) < 0.015:
+            return
+        self._scale = s
+        self._apply_scale()
+
+    def _apply_scale(self):
+        """Propagate the current scale to the whole UI: stylesheet, base font,
+        structural bars and every view/widget that carries inline sizing."""
+        s = self._scale
+        uiscale.set_scale(s)
+        # base application font (drives all text without an explicit size)
+        app = QApplication.instance()
+        if app is not None:
+            f = QFont(app.font())
+            f.setPointSizeF(max(6.5, 10.0 * s))
+            app.setFont(f)
+        self.setStyleSheet(build_qss(self.theme, s))
+        # structural bar heights
+        self.topbar.setFixedHeight(uiscale.sp(62))
+        self.bottombar.setFixedHeight(uiscale.sp(52))
+        # views + sidebar
+        for w in (self.sidebar, self.single, self.compare, self.report):
+            if hasattr(w, "apply_scale"):
+                w.apply_scale(s)
+        if self._presentation is not None and hasattr(self._presentation, "apply_scale"):
+            self._presentation.apply_scale(s)
 
     # -- presentation -------------------------------------------------------
     def _enter_presentation(self):
         if self.mode != "single":
             self._set_mode("single")
             self.sidebar.set_mode("single")
+        # Presentation is fullscreen: scale it to the actual screen size.
+        screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            g = screen.geometry()
+            pv_scale = uiscale.compute_scale(g.width(), g.height())
+        else:
+            pv_scale = self._scale
+        uiscale.set_scale(pv_scale)
         pv = PresentationView(self.theme)
-        pv.setStyleSheet(build_qss(self.theme))
+        pv.setStyleSheet(build_qss(self.theme, pv_scale))
+        pv.apply_scale(pv_scale)
         pv.bind(self.single)
         pv.exitRequested.connect(self._exit_presentation)
         pv.controlTriggered.connect(self._on_control)
@@ -329,6 +407,8 @@ class MainWindow(QMainWindow):
         self._presentation = pv
         pv.showFullScreen()
         pv.setFocus()
+        # restore the main-window scale afterwards
+        uiscale.set_scale(self._scale)
 
     def _exit_presentation(self):
         if self._presentation:
@@ -423,6 +503,7 @@ class MainWindow(QMainWindow):
         self.dataset_label = "Loaded Session"
         self.sidebar.select_algorithm(self.algorithm_key)
         self.sidebar.set_size(len(self.dataset))
+        self.sidebar.set_dataset_text(self.dataset)
         self.sidebar.set_speed(session.speed if session.speed in SPEED_CHOICES else 1.0)
         if session.mode == "compare":
             self.compare.load(session.algorithm, session.compare_algorithm, self.dataset)

@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..theme.palette import Theme
+from ..theme import scale as uiscale
 
 
 class CodeViewer(QWidget):
@@ -36,8 +37,12 @@ class CodeViewer(QWidget):
     def set_code(self, lines: list[str]) -> None:
         self._lines = lines
         self._active = set()
-        # clear
+        # clear - remove from the layout immediately (deleteLater alone is async
+        # and would leave the previous algorithm's code visible until the next
+        # event-loop pass, stacking two algorithms' pseudocode).
         for frame, _, _ in self._row_widgets:
+            self.vbox.removeWidget(frame)
+            frame.setParent(None)
             frame.deleteLater()
         self._row_widgets = []
         # insert before the trailing stretch
@@ -71,9 +76,13 @@ class CodeViewer(QWidget):
         self.theme = theme
         self._restyle()
 
+    def apply_scale(self, s: float) -> None:
+        self._restyle()
+
     def _restyle(self) -> None:
         t = self.theme
-        mono = "font-family:'Consolas','DejaVu Sans Mono',monospace; font-size:12px;"
+        mono = ("font-family:'Consolas','DejaVu Sans Mono',monospace; "
+                f"font-size:{uiscale.fs(12)}px;")
         for idx, (row, num, code) in enumerate(self._row_widgets):
             if idx in self._active:
                 row.setStyleSheet(

@@ -4,21 +4,84 @@ Runs two algorithms on the SAME dataset under one shared clock.  Play, Pause,
 Step, Restart, Reset, Timeline and Speed affect both sides simultaneously so
 the comparison is fair.  A shared Performance Summary highlights the algorithm
 that finished more efficiently.
+
+Layout notes: every panel is sized to stay fully visible without scrolling -
+each side has a compact header (no overlapping text), a scaling Numbered Block
+View, a live stats strip and a synchronized Code Viewer, and both sides share a
+Timeline scrubber and Performance Summary beneath them.
 """
 
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QComboBox
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QComboBox,
+    QProgressBar, QSizePolicy
 )
 
 from ..theme.palette import Theme
+from ..theme import scale as uiscale
 from ..core import registry
 from ..core.player import frame_exec_seconds
 from ..config import BASE_FRAME_MS
-from ..widgets import ArrayView, CodeViewer, StatsDashboard, ExplanationPanel, Legend
-from ..widgets.common import card, card_with_title, title_label
+from ..widgets import ArrayView, CodeViewer, ExplanationPanel, Legend, Timeline
+from ..widgets.common import card, card_with_title
+from ..theme.palette import LEGEND_STANDARD, STATE_PIVOT, STATE_SELECTED
+
+
+class _MiniStats(QWidget):
+    """Compact live-stats strip for one comparison workspace.
+
+    Shows the two comparison counters plus a thin progress bar; overall
+    position is also reflected by the shared Timeline scrubber below.
+    """
+
+    def __init__(self, theme: Theme, parent=None):
+        super().__init__(parent)
+        self.theme = theme
+        self._labels: dict[str, QLabel] = {}
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(3)
+        grid.setColumnStretch(1, 1)
+        for r, key in enumerate(["Comparisons", "Swaps"]):
+            k = QLabel(key); k.setProperty("role", "muted")
+            v = QLabel("—"); v.setProperty("role", "value")
+            v.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            grid.addWidget(k, r, 0)
+            grid.addWidget(v, r, 1)
+            self._labels[key] = v
+        lay.addLayout(grid)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100); self.progress.setValue(0)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(10)
+        lay.addWidget(self.progress)
+        lay.addStretch(1)
+
+    def clear(self):
+        for v in self._labels.values():
+            v.setText("—")
+        self.progress.setValue(0)
+
+    def update_from(self, frame, total: int):
+        if frame is None:
+            return
+        self._labels["Comparisons"].setText(str(frame.comparisons))
+        self._labels["Swaps"].setText(str(frame.swaps))
+        self.progress.setValue(int(round(100 * frame.op_number / max(1, total))))
+
+    def apply_scale(self, s: float):
+        self.progress.setFixedHeight(uiscale.sp(10))
+
+    def set_theme(self, theme: Theme):
+        self.theme = theme
 
 
 class _Mini(QWidget):
@@ -36,33 +99,53 @@ class _Mini(QWidget):
 
         c = card()
         outer = QVBoxLayout(c)
-        outer.setContentsMargins(12, 10, 12, 12)
-        outer.setSpacing(8)
+        outer.setContentsMargins(12, 10, 12, 10)
+        outer.setSpacing(7)
 
+        # header - name / badge on the left, step counter on the right; the
+        # name elides instead of overlapping the badge or step counter.
         head = QHBoxLayout()
-        self.name = title_label("Algorithm")
+        head.setSpacing(8)
+        self.name = QLabel("Algorithm")
+        self.name.setStyleSheet(f"font-size:14px; font-weight:700; color:{theme.text_primary};")
+        self.name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.badge = QLabel("Reset"); self.badge.setProperty("role", "badge-reset")
         self.steps = QLabel(""); self.steps.setProperty("role", "muted")
-        head.addWidget(self.name); head.addWidget(self.badge)
-        head.addStretch(1); head.addWidget(self.steps)
+        head.addWidget(self.name, 1)
+        head.addWidget(self.badge)
+        head.addWidget(self.steps)
         outer.addLayout(head)
 
+        # The array is the ONLY vertically-flexible element in a workspace, so
+        # when the window is short it shrinks (matplotlib just redraws smaller)
+        # instead of colliding with the panels below it.  The shared colour
+        # legend lives once beneath both workspaces (see CompareView), keeping
+        # each workspace compact and overlap-proof.
         self.array = ArrayView(theme)
-        self.array.setMinimumHeight(150)
-        outer.addWidget(self.array, 4)
-        self.legend = Legend(theme)
-        outer.addWidget(self.legend)
+        self.array.setMinimumHeight(44)
+        self.array.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        outer.addWidget(self.array, 1)
+        # Adaptive height: shows the full two-line explanation when there is
+        # room (large windows) and compresses gracefully on short screens - the
+        # array (the Expanding element) absorbs the difference first.
         self.explanation = ExplanationPanel(theme)
+        self.explanation.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        self.explanation.setMinimumHeight(38)
+        self.explanation.setMaximumHeight(70)
         outer.addWidget(self.explanation)
 
-        bottom = QHBoxLayout()
+        bottom_w = QWidget()
+        self._bottom_w = bottom_w
+        bottom_w.setFixedHeight(102)
+        bottom = QHBoxLayout(bottom_w)
+        bottom.setContentsMargins(0, 0, 0, 0)
         bottom.setSpacing(8)
         sc, sl = card_with_title("Statistics")
-        self.stats = StatsDashboard(theme); sl.addWidget(self.stats)
+        self.stats = _MiniStats(theme); sl.addWidget(self.stats)
         cc, cl = card_with_title("Code Viewer")
         self.code = CodeViewer(theme); cl.addWidget(self.code)
-        bottom.addWidget(sc, 1); bottom.addWidget(cc, 1)
-        outer.addLayout(bottom, 2)
+        bottom.addWidget(sc, 2); bottom.addWidget(cc, 3)
+        outer.addWidget(bottom_w)
 
         lay.addWidget(c)
 
@@ -70,7 +153,6 @@ class _Mini(QWidget):
         self.info = info
         self.name.setText(info.name)
         self.code.set_code(info.pseudocode)
-        self.legend.set_items(info.legend)
         self.stats.clear()
 
     def set_frames(self, frames: list) -> None:
@@ -87,14 +169,37 @@ class _Mini(QWidget):
         self.explanation.update_from(frame)
         done = idx >= len(self.frames) - 1
         self.steps.setText(f"Step {frame.op_number} / {len(self.frames)}")
-        status = "Completed" if done else ("Running" if pos < total else "Completed")
+        if pos == 0:
+            status = "Reset"
+        elif done:
+            status = "Completed"
+        else:
+            status = "Running"
         self.badge.setText(status)
         self.badge.setProperty("role", f"badge-{status.lower()}")
         self.badge.style().unpolish(self.badge); self.badge.style().polish(self.badge)
 
+    def set_status(self, status: str) -> None:
+        self.badge.setText(status)
+        self.badge.setProperty("role", f"badge-{status.lower()}")
+        self.badge.style().unpolish(self.badge); self.badge.style().polish(self.badge)
+
+    def apply_scale(self, s: float) -> None:
+        self.name.setStyleSheet(
+            f"font-size:{uiscale.fs(14)}px; font-weight:700; color:{self.theme.text_primary};")
+        self.array.setMinimumHeight(uiscale.sp(44))
+        self.explanation.setMinimumHeight(uiscale.sp(38))
+        self.explanation.setMaximumHeight(uiscale.sp(70))
+        self._bottom_w.setFixedHeight(uiscale.sp(102))
+        for w in (self.array, self.stats, self.code, self.explanation):
+            if hasattr(w, "apply_scale"):
+                w.apply_scale(s)
+
     def set_theme(self, theme: Theme) -> None:
         self.theme = theme
-        for w in (self.array, self.stats, self.code, self.explanation, self.legend):
+        self.name.setStyleSheet(
+            f"font-size:{uiscale.fs(14)}px; font-weight:700; color:{theme.text_primary};")
+        for w in (self.array, self.stats, self.code, self.explanation):
             w.set_theme(theme)
 
 
@@ -114,13 +219,17 @@ class CompareView(QWidget):
         self._timer.timeout.connect(self._tick)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(14, 12, 14, 12)
-        root.setSpacing(10)
+        root.setContentsMargins(14, 10, 14, 8)
+        root.setSpacing(7)
 
         top = QHBoxLayout()
         header = QLabel("COMPARISON MODE")
         header.setProperty("role", "title")
         top.addWidget(header)
+        sub = QLabel("Two algorithms · same dataset · shared controls")
+        sub.setProperty("role", "muted")
+        top.addSpacing(12)
+        top.addWidget(sub)
         top.addStretch(1)
         self.combo_a = QComboBox()
         self.combo_b = QComboBox()
@@ -131,15 +240,12 @@ class CompareView(QWidget):
         self.combo_b.setCurrentIndex(1)   # selection
         self.combo_a.currentIndexChanged.connect(self._on_combo)
         self.combo_b.currentIndexChanged.connect(self._on_combo)
-        top.addWidget(QLabel("Left:"))
-        top.addWidget(self.combo_a)
+        la = QLabel("Left:"); la.setProperty("role", "muted")
+        lb = QLabel("Right:"); lb.setProperty("role", "muted")
+        top.addWidget(la); top.addWidget(self.combo_a)
         top.addSpacing(10)
-        top.addWidget(QLabel("Right:"))
-        top.addWidget(self.combo_b)
+        top.addWidget(lb); top.addWidget(self.combo_b)
         root.addLayout(top)
-        sub = QLabel("Two algorithms run simultaneously on the same dataset with shared controls.")
-        sub.setProperty("role", "muted")
-        root.addWidget(sub)
 
         self.left = _Mini(theme)
         self.right = _Mini(theme)
@@ -147,21 +253,42 @@ class CompareView(QWidget):
         row.setSpacing(10)
         row.addWidget(self.left, 1)
         row.addWidget(self.right, 1)
-        root.addLayout(row, 1)
+        root.addLayout(row, 3)
+
+        # one shared colour legend for both workspaces (PRD 5.3 visual language)
+        self.legend = Legend(theme)
+        self.legend.set_items(
+            LEGEND_STANDARD + [(STATE_SELECTED, "Selected"), (STATE_PIVOT, "Pivot")])
+        leg_row = QHBoxLayout()
+        leg_row.addStretch(1)
+        leg_row.addWidget(self.legend)
+        leg_row.addStretch(1)
+        root.addLayout(leg_row)
+
+        # shared timeline (PRD 7.5 - Timeline Navigation affects both sides).
+        # Plain card - the Timeline widget carries its own "Operation N" label.
+        tl_card = card()
+        tl_lay = QVBoxLayout(tl_card)
+        tl_lay.setContentsMargins(14, 6, 14, 8)
+        tl_lay.setSpacing(2)
+        self.timeline = Timeline(theme, style="bar")
+        self.timeline.seekRequested.connect(self.seek)
+        tl_lay.addWidget(self.timeline)
+        root.addWidget(tl_card)
 
         root.addWidget(self._build_summary())
 
     def _build_summary(self) -> QWidget:
         frame, lay = card_with_title("Performance Summary")
-        self.summary_row = QHBoxLayout()
-        self.summary_row.setSpacing(20)
+        lay.setContentsMargins(14, 6, 14, 8)
+        lay.setSpacing(4)
+        self.summary_grid = QGridLayout()
+        self.summary_grid.setHorizontalSpacing(18)
+        self.summary_grid.setVerticalSpacing(2)
         holder = QWidget()
-        holder.setLayout(self.summary_row)
+        holder.setLayout(self.summary_grid)
         lay.addWidget(holder)
         self._summary_frame = frame
-        self.winner_label = QLabel("")
-        self.winner_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lay.addWidget(self.winner_label)
         return frame
 
     # -- lifecycle ----------------------------------------------------------
@@ -197,6 +324,7 @@ class CompareView(QWidget):
         self.right.set_frames(fb)
         self._total = max(len(fa), len(fb))
         self._pos = 0
+        self.timeline.configure(self._total, 0)
         self._render()
         self._update_summary()
         self.statusChanged.emit("Reset")
@@ -212,6 +340,7 @@ class CompareView(QWidget):
         if self._timer.isActive():
             self._timer.stop()
             self.statusChanged.emit("Paused")
+            self.left.set_status("Paused"); self.right.set_status("Paused")
 
     def step(self):
         self._timer.stop()
@@ -263,53 +392,89 @@ class CompareView(QWidget):
     def _render(self):
         self.left.render_at(self._pos, self._total)
         self.right.render_at(self._pos, self._total)
+        op = min(self._pos + 1, self._total)
+        self.timeline.update_current(self._pos, op, f"Operation {op}")
 
     # -- performance summary ------------------------------------------------
     def _update_summary(self):
-        while self.summary_row.count():
-            it = self.summary_row.takeAt(0)
-            if it.widget():
-                it.widget().deleteLater()
+        # rebuild the comparison table (Metric | A | B), highlighting the winner.
+        # Remove old cells from the layout synchronously (deleteLater alone is
+        # async and would stack the previous table's cells on top when the user
+        # changes an algorithm from the dropdown).
+        while self.summary_grid.count():
+            it = self.summary_grid.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
         fa = self.left.frames[-1]
         fb = self.right.frames[-1]
         ia, ib = self.left.info, self.right.info
         ta, tb = frame_exec_seconds(fa), frame_exec_seconds(fb)
 
-        def tile(info, frame, t, winner):
-            w = card()
-            v = QVBoxLayout(w)
-            v.setContentsMargins(12, 10, 12, 10)
-            name = QLabel(("🏆  " if winner else "") + info.name)
-            name.setStyleSheet(
-                f"font-weight:700; color:{self.theme.success if winner else self.theme.text_primary};")
-            v.addWidget(name)
-            v.addWidget(QLabel(f"Comparisons: {frame.comparisons}"))
-            v.addWidget(QLabel(f"Swaps / Moves: {frame.swaps}"))
-            v.addWidget(QLabel(f"Execution Time: {t:.3f} s"))
-            v.addWidget(QLabel(f"Time Complexity: {info.average}"))
-            v.addWidget(QLabel(f"Space Complexity: {info.space}"))
-            return w
-
-        # more efficient = lower execution time, tie-break on total operations
         a_ops = fa.comparisons + fa.swaps
         b_ops = fb.comparisons + fb.swaps
         if (ta, a_ops) < (tb, b_ops):
-            win_a, win_b, winner = True, False, ia.name
+            winner, win_a, win_b = ia.name, True, False
         elif (tb, b_ops) < (ta, a_ops):
-            win_a, win_b, winner = False, True, ib.name
+            winner, win_a, win_b = ib.name, False, True
         else:
-            win_a = win_b = False
-            winner = "Tie"
+            winner, win_a, win_b = "Tie", False, False
 
-        self.summary_row.addWidget(tile(ia, fa, ta, win_a))
-        self.summary_row.addWidget(tile(ib, fb, tb, win_b))
-        self.winner_label.setText(
-            f"More efficient on this dataset: <b style='color:{self.theme.success}'>{winner}</b>")
-        self.winner_label.setTextFormat(Qt.TextFormat.RichText)
+        t = self.theme
+
+        fsz = uiscale.fs(12)
+
+        def header(text, win):
+            lbl = QLabel((("🏆  " if win else "") + text) +
+                         ("   ·  more efficient" if win else ""))
+            lbl.setStyleSheet(
+                f"font-weight:700; font-size:{fsz}px; "
+                f"color:{t.success if win else t.text_primary};")
+            return lbl
+
+        def cell(text, win):
+            lbl = QLabel(text)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            lbl.setStyleSheet(
+                f"font-size:{fsz}px; font-weight:600; "
+                f"color:{t.success if win else t.text_primary};")
+            return lbl
+
+        g = self.summary_grid
+        g.addWidget(QLabel(""), 0, 0)
+        g.addWidget(header(ia.name, win_a), 0, 1)
+        g.addWidget(header(ib.name, win_b), 0, 2)
+
+        rows = [
+            ("Comparisons", str(fa.comparisons), str(fb.comparisons)),
+            ("Swaps / Moves", str(fa.swaps), str(fb.swaps)),
+            ("Execution Time", f"{ta:.3f} s", f"{tb:.3f} s"),
+            ("Time Complexity", ia.average, ib.average),
+            ("Space Complexity", ia.space, ib.space),
+        ]
+        for r, (metric, va, vb) in enumerate(rows, start=1):
+            m = QLabel(metric); m.setProperty("role", "muted")
+            m.setStyleSheet(f"font-size:{fsz}px;")
+            g.addWidget(m, r, 0)
+            g.addWidget(cell(va, win_a), r, 1)
+            g.addWidget(cell(vb, win_b), r, 2)
+        g.setColumnStretch(1, 1)
+        g.setColumnStretch(2, 1)
+
+    def apply_scale(self, s: float) -> None:
+        self.left.apply_scale(s)
+        self.right.apply_scale(s)
+        self.timeline.apply_scale(s)
+        self.legend.apply_scale(s)
+        if self.left.frames:
+            self._update_summary()
 
     def set_theme(self, theme: Theme) -> None:
         self.theme = theme
         self.left.set_theme(theme)
         self.right.set_theme(theme)
+        self.timeline.set_theme(theme)
+        self.legend.set_theme(theme)
         if self.left.frames:
             self._update_summary()

@@ -5,14 +5,16 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QButtonGroup,
-    QPushButton, QSlider, QComboBox, QScrollArea, QSizePolicy
+    QPushButton, QSlider, QComboBox, QScrollArea, QSizePolicy, QLineEdit
 )
 
 from ..theme.palette import Theme
-from ..core import registry
+from ..theme import scale as uiscale
+from ..core import registry, dataset
 from ..config import (
     ARRAY_SIZE_MIN, ARRAY_SIZE_MAX, ARRAY_SIZE_DEFAULT,
     SPEED_CHOICES, SPEED_LABELS, SPEED_DEFAULT, SHORTCUTS,
+    VALUE_MIN, VALUE_MAX,
 )
 from .common import section_label
 
@@ -22,7 +24,7 @@ def _control_button(icon: str, label: str, key: str = "") -> QPushButton:
     btn.setProperty("variant", "control")
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
     hb = QHBoxLayout(btn)
-    hb.setContentsMargins(10, 6, 10, 6)
+    hb.setContentsMargins(10, 4, 10, 4)
     hb.setSpacing(8)
     lead = QLabel(f"{icon}  {label}")
     lead.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -44,6 +46,7 @@ class Sidebar(QScrollArea):
     shuffleRequested = pyqtSignal()
     sizeChanged = pyqtSignal(int)
     speedChanged = pyqtSignal(float)
+    customArraySubmitted = pyqtSignal(list)   # validated list[int]
 
     def __init__(self, theme: Theme, parent=None):
         super().__init__(parent)
@@ -57,8 +60,8 @@ class Sidebar(QScrollArea):
         body.setObjectName("Sidebar")
         self.setWidget(body)
         v = QVBoxLayout(body)
-        v.setContentsMargins(14, 14, 14, 14)
-        v.setSpacing(6)
+        v.setContentsMargins(14, 12, 14, 12)
+        v.setSpacing(4)
 
         # --- ALGORITHMS ----------------------------------------------------
         v.addWidget(section_label("Algorithms"))
@@ -74,7 +77,7 @@ class Sidebar(QScrollArea):
             self._algo_buttons[info.key] = rb
             rb.clicked.connect(lambda _, k=info.key: self.algorithmSelected.emit(k))
             v.addWidget(rb)
-        v.addSpacing(8)
+        v.addSpacing(5)
 
         # --- MODES ---------------------------------------------------------
         v.addWidget(section_label("Modes"))
@@ -90,7 +93,7 @@ class Sidebar(QScrollArea):
             b.clicked.connect(lambda _, mode=m: self.modeChanged.emit(mode))
             v.addWidget(b)
         self.btn_single.setChecked(True)
-        v.addSpacing(8)
+        v.addSpacing(5)
 
         # --- CONTROLS ------------------------------------------------------
         v.addWidget(section_label("Controls"))
@@ -111,7 +114,7 @@ class Sidebar(QScrollArea):
         for b in (self.btn_play, self.btn_pause, self.btn_step, self.btn_restart,
                   self.btn_reset, self.btn_random, self.btn_shuffle):
             v.addWidget(b)
-        v.addSpacing(8)
+        v.addSpacing(5)
 
         # --- ARRAY CONFIGURATION ------------------------------------------
         v.addWidget(section_label("Array Configuration"))
@@ -158,6 +161,38 @@ class Sidebar(QScrollArea):
                 tick_row.addStretch(1)
         v.addLayout(tick_row)
 
+        # --- CUSTOM ARRAY (in-sidebar, available in every mode, PRD 7.3) ---
+        v.addSpacing(5)
+        v.addWidget(section_label("Custom Array"))
+        hint = QLabel(f"Comma-separated integers ({VALUE_MIN}–{VALUE_MAX})")
+        hint.setProperty("role", "muted")
+        hint.setStyleSheet("font-size:10px;")
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+
+        self.custom_input = QLineEdit()
+        self.custom_input.setPlaceholderText("e.g. 64, 34, 25, 12, 22, 11")
+        self.custom_input.returnPressed.connect(self._on_apply_custom)
+        v.addWidget(self.custom_input)
+
+        self.custom_msg = QLabel("")
+        self.custom_msg.setWordWrap(True)
+        self.custom_msg.setStyleSheet("font-size:10px;")
+        self.custom_msg.setVisible(False)
+        v.addWidget(self.custom_msg)
+
+        cust_row = QHBoxLayout()
+        cust_row.setSpacing(6)
+        self.btn_apply = QPushButton("Apply Array")
+        self.btn_apply.setProperty("variant", "primary")
+        self.btn_clear = QPushButton("Clear")
+        self.btn_clear.setProperty("variant", "ghost")
+        self.btn_apply.clicked.connect(self._on_apply_custom)
+        self.btn_clear.clicked.connect(self._on_clear_custom)
+        cust_row.addWidget(self.btn_apply, 1)
+        cust_row.addWidget(self.btn_clear)
+        v.addLayout(cust_row)
+
         v.addStretch(1)
 
         # controls that must lock while running (PRD 7.2)
@@ -166,6 +201,7 @@ class Sidebar(QScrollArea):
             self.btn_single, self.btn_compare,
             self.btn_random, self.btn_shuffle,
             self.size_slider,
+            self.custom_input, self.btn_apply, self.btn_clear,
         ]
 
     # -- external control ---------------------------------------------------
@@ -204,8 +240,54 @@ class Sidebar(QScrollArea):
             w.setEnabled(not locked)
         self.speed_combo.setEnabled(True)   # speed always adjustable (PRD 7.2)
 
+    def set_dataset_text(self, values: list[int]) -> None:
+        """Reflect the current dataset in the custom-array input field."""
+        self.custom_input.blockSignals(True)
+        self.custom_input.setText(", ".join(map(str, values)))
+        self.custom_input.blockSignals(False)
+        self._clear_custom_error()
+
     def set_theme(self, theme: Theme) -> None:
         self.theme = theme
+
+    def apply_scale(self, s: float) -> None:
+        self.setFixedWidth(uiscale.sp(238))
+        if self.custom_msg.text():
+            self.custom_msg.setStyleSheet(
+                f"font-size:{uiscale.fs(10)}px; color:{self.theme.danger};")
+        else:
+            self.custom_msg.setStyleSheet(f"font-size:{uiscale.fs(10)}px;")
+
+    # -- custom array -------------------------------------------------------
+    def _on_apply_custom(self) -> None:
+        try:
+            values = dataset.parse_custom_input(self.custom_input.text())
+        except dataset.ValidationError as exc:
+            self._show_custom_error(str(exc))
+            return
+        self._clear_custom_error()
+        self.customArraySubmitted.emit(values)
+
+    def _on_clear_custom(self) -> None:
+        # Clears the input field only; the active dataset is preserved so the
+        # visualization never drops below the minimum supported size.
+        self.custom_input.clear()
+        self._clear_custom_error()
+
+    def _show_custom_error(self, text: str) -> None:
+        self.custom_msg.setText(f"⚠  {text}")
+        self.custom_msg.setStyleSheet(f"font-size:10px; color:{self.theme.danger};")
+        self.custom_msg.setVisible(True)
+        self.custom_input.setProperty("state", "error")
+        self.custom_input.style().unpolish(self.custom_input)
+        self.custom_input.style().polish(self.custom_input)
+
+    def _clear_custom_error(self) -> None:
+        self.custom_msg.setVisible(False)
+        self.custom_msg.setText("")
+        self.custom_input.setProperty("state", "")
+        self.custom_input.style().unpolish(self.custom_input)
+        self.custom_input.style().polish(self.custom_input)
 
     # -- internal -----------------------------------------------------------
     def _on_size(self, value: int) -> None:

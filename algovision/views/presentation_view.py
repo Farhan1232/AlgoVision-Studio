@@ -8,14 +8,21 @@ the playback controls required for classroom use and adds keyboard shortcuts.
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QGridLayout
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QGridLayout,
+    QScrollArea
 )
 
 from ..theme.palette import Theme
+from ..theme import scale as uiscale
 from ..core.player import frame_exec_seconds
 from ..widgets import ArrayView, HeapTreeView, ExplanationPanel
 from ..widgets.common import card, section_label
+from ..config import APP_NAME, APP_TAGLINE
+from ..resources import assets_dir
+
+ASSETS = assets_dir()
 
 
 class PresentationView(QWidget):
@@ -30,33 +37,60 @@ class PresentationView(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(28, 20, 28, 20)
-        root.setSpacing(14)
+        root.setContentsMargins(28, 18, 28, 16)
+        root.setSpacing(10)
 
-        # top bar
+        # top bar: logo + title (left) · PRESENTATION MODE pill (center) · Esc
         top = QHBoxLayout()
-        badge = QLabel("🖥️  PRESENTATION MODE")
-        badge.setStyleSheet(f"color:{theme.accent_2}; font-size:16px; font-weight:800;")
+        brand = QHBoxLayout()
+        brand.setSpacing(10)
+        logo = ASSETS / "logo.png"
+        if logo.exists():
+            lg = QLabel()
+            lg.setPixmap(QPixmap(str(logo)).scaledToHeight(
+                36, Qt.TransformationMode.SmoothTransformation))
+            brand.addWidget(lg)
+        brand_col = QVBoxLayout(); brand_col.setSpacing(0)
+        self._brand_title = QLabel(APP_NAME)
+        self._brand_sub = QLabel(APP_TAGLINE); self._brand_sub.setProperty("role", "muted")
+        brand_col.addWidget(self._brand_title); brand_col.addWidget(self._brand_sub)
+        brand.addLayout(brand_col)
+        top.addLayout(brand)
+        top.addStretch(1)
+
+        self.pill = QLabel("🖥️  PRESENTATION MODE")
+        self.pill.setProperty("variant", "present-pill")
+        top.addWidget(self.pill)
+        top.addStretch(1)
+
         self.esc_hint = QLabel("Press  Esc  to exit")
         self.esc_hint.setProperty("role", "muted")
-        top.addStretch(1); top.addWidget(badge); top.addStretch(1); top.addWidget(self.esc_hint)
+        top.addWidget(self.esc_hint)
         root.addLayout(top)
+
+        tagline = QLabel("Focus on learning. Engage your audience.")
+        tagline.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        tagline.setProperty("role", "muted")
+        root.addWidget(tagline)
 
         body = QHBoxLayout()
         body.setSpacing(18)
 
         # left: big visualization
         left = QVBoxLayout()
-        left.setSpacing(10)
-        self.algo_name = QLabel("Algorithm")
-        self.algo_name.setStyleSheet(f"font-size:30px; font-weight:800; color:{theme.text_primary};")
-        self.subtitle = QLabel("")
-        self.subtitle.setStyleSheet(f"color:{theme.accent_2}; font-size:15px; font-weight:600;")
-        self.stepline = QLabel("")
-        self.stepline.setProperty("role", "muted")
+        left.setSpacing(8)
         head = QHBoxLayout()
-        head.addWidget(self.stepline); head.addStretch(1); head.addWidget(self.subtitle)
-        left.addWidget(self.algo_name)
+        name_col = QVBoxLayout(); name_col.setSpacing(2)
+        self.algo_name = QLabel("Algorithm")
+        self.stepline = QLabel("")
+        self.stepline.setStyleSheet(f"color:{theme.accent_2}; font-weight:600;")
+        name_col.addWidget(self.algo_name)
+        name_col.addWidget(self.stepline)
+        head.addLayout(name_col)
+        head.addStretch(1)
+        self.subtitle = QLabel("")
+        self.subtitle.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        head.addWidget(self.subtitle, 1)
         left.addLayout(head)
 
         self.array = ArrayView(theme)
@@ -69,9 +103,8 @@ class PresentationView(QWidget):
         left.addWidget(self.explanation)
         body.addLayout(left, 3)
 
-        # right: live stats + info
-        self.side = QVBoxLayout()
-        self.side.setSpacing(12)
+        # right: live stats + info, inside a scroll area so the panels adapt to
+        # any laptop height (they scroll instead of overflowing on short screens)
         self.stats_card, self._stat_labels = self._stat_block(
             "Live Statistics",
             ["Comparisons", "Swaps / Moves", "Execution Time", "Current Operation",
@@ -81,15 +114,52 @@ class PresentationView(QWidget):
             ["Time Complexity", "Space Complexity", "Stable", "In-Place"])
         self.data_card, self._data_labels = self._stat_block(
             "Dataset Info", ["Type", "Size", "Range"])
+
+        side_body = QWidget()
+        self.side = QVBoxLayout(side_body)
+        self.side.setContentsMargins(0, 0, 6, 0)
+        self.side.setSpacing(12)
         self.side.addWidget(self.stats_card)
         self.side.addWidget(self.info_card)
         self.side.addWidget(self.data_card)
         self.side.addStretch(1)
-        body.addLayout(self.side, 1)
+
+        side_scroll = QScrollArea()
+        side_scroll.setWidgetResizable(True)
+        side_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        side_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        side_scroll.setWidget(side_body)
+        side_scroll.setMinimumWidth(300)
+        side_scroll.setStyleSheet("background: transparent;")
+        body.addWidget(side_scroll, 1)
         root.addLayout(body, 1)
 
         # bottom controls
         root.addWidget(self._controls())
+        self._restyle()
+
+    def _restyle(self) -> None:
+        """(Re)apply all scale-dependent inline styles for the current theme."""
+        t = self.theme
+        self._brand_title.setStyleSheet(
+            f"font-size:{uiscale.fs(18)}px; font-weight:800; color:{t.text_primary};")
+        self._brand_sub.setStyleSheet(
+            f"color:{t.text_muted}; font-size:{uiscale.fs(10)}px; letter-spacing:1px;")
+        self.pill.setStyleSheet(
+            f"color:{t.accent_2}; font-size:{uiscale.fs(15)}px; font-weight:800; "
+            f"border:1px solid {t.border}; border-radius:{uiscale.sp(10)}px; "
+            f"padding:{uiscale.sp(8)}px {uiscale.sp(22)}px; background:{t.card_bg};")
+        self.algo_name.setStyleSheet(
+            f"font-size:{uiscale.fs(28)}px; font-weight:800; color:{t.text_primary};")
+        self.stepline.setStyleSheet(f"color:{t.accent_2}; font-weight:600;")
+        self.subtitle.setStyleSheet(
+            f"color:{t.accent_2}; font-size:{uiscale.fs(16)}px; font-weight:700;")
+        self.speed_val.setFixedWidth(uiscale.sp(48))
+        for b in self._speed_btns:
+            b.setFixedWidth(uiscale.sp(34))
+
+    def apply_scale(self, s: float) -> None:
+        self._restyle()
 
     def _stat_block(self, title, keys):
         c = card()
@@ -111,8 +181,9 @@ class PresentationView(QWidget):
     def _controls(self):
         c = card()
         h = QHBoxLayout(c)
-        h.setContentsMargins(14, 8, 14, 8)
-        h.setSpacing(8)
+        h.setContentsMargins(16, 8, 16, 8)
+        h.setSpacing(10)
+
         specs = [("▶ Play", "play"), ("⏸ Pause", "pause"), ("⏭ Step", "step"),
                  ("↻ Restart", "restart"), ("⭯ Reset", "reset")]
         for label, key in specs:
@@ -120,16 +191,30 @@ class PresentationView(QWidget):
             b.setProperty("variant", "ghost")
             b.clicked.connect(lambda _, k=key: self.controlTriggered.emit(k))
             h.addWidget(b)
-        h.addStretch(1)
+
+        h.addSpacing(18)
+        sc_lbl = QLabel("KEYBOARD SHORTCUTS")
+        sc_lbl.setProperty("role", "section")
+        h.addWidget(sc_lbl)
         hint = QLabel("Space Play/Pause   →/← Step   S/F Speed   R Restart   Esc Exit")
         hint.setProperty("role", "muted")
         h.addWidget(hint)
-        minus = QPushButton("–"); plus = QPushButton("+")
+
+        h.addStretch(1)
+        spd_lbl = QLabel("ANIMATION SPEED")
+        spd_lbl.setProperty("role", "section")
+        h.addWidget(spd_lbl)
+        minus = QPushButton("–")
+        self.speed_val = QLabel("1.0x")
+        self.speed_val.setProperty("role", "value")
+        self.speed_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        plus = QPushButton("+")
+        self._speed_btns = (minus, plus)
         for b in (minus, plus):
-            b.setProperty("variant", "ghost"); b.setFixedWidth(34)
+            b.setProperty("variant", "ghost")
         minus.clicked.connect(lambda: self.speedDelta.emit(-1))
         plus.clicked.connect(lambda: self.speedDelta.emit(1))
-        h.addWidget(minus); h.addWidget(plus)
+        h.addWidget(minus); h.addWidget(self.speed_val); h.addWidget(plus)
         return c
 
     # -- binding to the live single-view player -----------------------------
@@ -179,6 +264,8 @@ class PresentationView(QWidget):
         dl["Size"].setText(str(len(s.original)))
         dl["Range"].setText("1 – 1000")
 
+        self.speed_val.setText(f"{s.player.speed:g}x")
+
     # -- keyboard -----------------------------------------------------------
     def keyPressEvent(self, e):
         k = e.key()
@@ -201,5 +288,6 @@ class PresentationView(QWidget):
 
     def set_theme(self, theme: Theme) -> None:
         self.theme = theme
+        self._restyle()
         for w in (self.array, self.heap, self.explanation):
             w.set_theme(theme)
