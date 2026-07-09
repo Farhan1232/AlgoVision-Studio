@@ -26,7 +26,7 @@ from ..theme.palette import Theme
 from ..theme import scale as uiscale
 
 
-def build_milestones(frames: list, max_items: int = 7) -> list[tuple[int, str]]:
+def build_milestones(frames: list, max_items: int = 5) -> list[tuple[int, str]]:
     """Derive a short list of (frame index, label) checkpoints from a run.
 
     Prefers algorithm *phases* (Heap/Merge), then *passes*, and otherwise
@@ -156,7 +156,8 @@ class _Milestone(QPushButton):
         self.theme = theme
         self.setProperty("variant", "milestone")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        # Expand vertically so rows divide the box evenly and stay well-spaced.
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self._state = "pending"
         self._ordinal = ordinal
@@ -260,24 +261,14 @@ class Timeline(QWidget):
         header.addWidget(self.next_btn)
         lay.addLayout(header)
 
-        # milestone list (vertical style only).  Lives in a scroll area so a
-        # short window scrolls the checkpoints internally instead of letting the
-        # rows overlap; the header above and the scrubber below stay pinned.
+        # milestone list (vertical style only).  The rows share the available
+        # height equally (each row Expanding, stretch 1) so the checklist stays
+        # evenly spaced and fully visible at any box size - no scrolling, no
+        # crowding - and grows/shrinks with the window.
         self._mile_box = QVBoxLayout()
         self._mile_box.setSpacing(2)
         if style == "milestones":
-            self._mile_scroll = QScrollArea()
-            self._mile_scroll.setWidgetResizable(True)
-            self._mile_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-            self._mile_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            mbody = QWidget()
-            mbody_lay = QVBoxLayout(mbody)
-            mbody_lay.setContentsMargins(0, 0, 0, 0)
-            mbody_lay.setSpacing(0)
-            mbody_lay.addLayout(self._mile_box)
-            mbody_lay.addStretch(1)
-            self._mile_scroll.setWidget(mbody)
-            lay.addWidget(self._mile_scroll, 1)
+            lay.addLayout(self._mile_box, 1)
         else:
             lay.addLayout(self._mile_box)
 
@@ -304,7 +295,7 @@ class Timeline(QWidget):
         for ordinal, (index, label) in enumerate(milestones, start=1):
             m = _Milestone(ordinal, label, index, self.theme)
             m.clicked.connect(lambda _=False, i=index: self.seekRequested.emit(i))
-            self._mile_box.addWidget(m)
+            self._mile_box.addWidget(m, 1)   # equal share of the box height
             self._milestones.append(m)
         self._refresh_milestone_states()
 

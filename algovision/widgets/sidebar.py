@@ -53,13 +53,18 @@ class Sidebar(QScrollArea):
         self.theme = theme
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # No vertical scrolling: the sidebar auto-scales its own text/spacing so
+        # every control fits on one screen (see apply_scale).
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setObjectName("Sidebar")
         self.setFixedWidth(238)
 
         body = QWidget()
         body.setObjectName("Sidebar")
         self.setWidget(body)
+        self._body = body
         v = QVBoxLayout(body)
+        self._v = v
         v.setContentsMargins(14, 12, 14, 12)
         v.setSpacing(4)
 
@@ -152,10 +157,12 @@ class Sidebar(QScrollArea):
         self.speed_slider.setValue(SPEED_CHOICES.index(SPEED_DEFAULT))
         self.speed_slider.valueChanged.connect(self._on_speed_slider)
         v.addWidget(self.speed_slider)
+        self._tick_labels = []
         tick_row = QHBoxLayout()
         for spd in SPEED_CHOICES:
             lbl = QLabel(f"{spd:g}x"); lbl.setProperty("role", "muted")
             lbl.setStyleSheet("font-size:9px;")
+            self._tick_labels.append(lbl)
             tick_row.addWidget(lbl)
             if spd != SPEED_CHOICES[-1]:
                 tick_row.addStretch(1)
@@ -164,14 +171,8 @@ class Sidebar(QScrollArea):
         # --- CUSTOM ARRAY (in-sidebar, available in every mode, PRD 7.3) ---
         v.addSpacing(5)
         v.addWidget(section_label("Custom Array"))
-        hint = QLabel(f"Comma-separated integers ({VALUE_MIN}–{VALUE_MAX})")
-        hint.setProperty("role", "muted")
-        hint.setStyleSheet("font-size:10px;")
-        hint.setWordWrap(True)
-        v.addWidget(hint)
-
         self.custom_input = QLineEdit()
-        self.custom_input.setPlaceholderText("e.g. 64, 34, 25, 12, 22, 11")
+        self.custom_input.setPlaceholderText("e.g. 64, 34, 25, 12, 22")
         self.custom_input.returnPressed.connect(self._on_apply_custom)
         v.addWidget(self.custom_input)
 
@@ -250,13 +251,53 @@ class Sidebar(QScrollArea):
     def set_theme(self, theme: Theme) -> None:
         self.theme = theme
 
-    def apply_scale(self, s: float) -> None:
-        self.setFixedWidth(uiscale.sp(238))
-        if self.custom_msg.text():
-            self.custom_msg.setStyleSheet(
-                f"font-size:{uiscale.fs(10)}px; color:{self.theme.danger};")
-        else:
-            self.custom_msg.setStyleSheet(f"font-size:{uiscale.fs(10)}px;")
+    def apply_scale(self, s: float, avail: int | None = None) -> None:
+        """Scale the sidebar to fit its available height WITHOUT scrolling.
+
+        Everything (fonts, paddings, spacing, width) shrinks together until all
+        controls fit on one screen.  Uses a calibrated linear model of the
+        content height, ``content(x) ~= A*x + B``, to solve for the largest
+        scale that fits, capped by the global scale.
+        """
+        if avail is None:
+            avail = self.height()
+        # Calibrated for the current set of sidebar controls:
+        # content(x) ~= A*x + B (px).
+        A, B = 434.0, 270.0
+        s_fit = (avail - B) / A if avail > B else 0.42
+        s_eff = max(0.42, min(s, s_fit * 0.98))
+        self._style_at(s_eff)
+
+    def _style_at(self, s: float) -> None:
+        """Apply a sidebar-scoped stylesheet + scaled spacing at scale ``s``."""
+        def f(v):
+            return max(7, round(v * s))
+
+        def p(v):
+            return max(1, round(v * s))
+
+        self.setFixedWidth(max(150, round(238 * s)))
+        self._v.setContentsMargins(p(14), p(10), p(14), p(10))
+        self._v.setSpacing(p(3))
+        t = self.theme
+        self.setStyleSheet(f"""
+            #Sidebar {{ background-color:{t.sidebar_bg}; border-right:1px solid {t.border}; }}
+            QLabel {{ font-size:{f(12)}px; }}
+            QLabel[role="section"] {{ font-size:{f(10)}px; }}
+            QPushButton[variant="nav"], QPushButton[variant="mode"],
+            QPushButton[variant="control"] {{
+                padding:{p(4)}px {p(9)}px; font-size:{f(12)}px; border-radius:{p(7)}px;
+            }}
+            QPushButton[variant="control"] QLabel {{ font-size:{f(12)}px; }}
+            QPushButton[variant="primary"], QPushButton[variant="ghost"] {{
+                padding:{p(4)}px {p(8)}px; font-size:{f(11)}px; border-radius:{p(6)}px;
+            }}
+            QComboBox, QLineEdit {{ padding:{p(3)}px {p(8)}px; font-size:{f(11)}px; }}
+        """)
+        for lbl in getattr(self, "_tick_labels", []):
+            lbl.setStyleSheet(f"font-size:{f(9)}px;")
+        col = self.theme.danger if self.custom_msg.text() else self.theme.text_secondary
+        self.custom_msg.setStyleSheet(f"font-size:{f(9)}px; color:{col};")
 
     # -- custom array -------------------------------------------------------
     def _on_apply_custom(self) -> None:

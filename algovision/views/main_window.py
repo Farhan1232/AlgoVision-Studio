@@ -377,8 +377,11 @@ class MainWindow(QMainWindow):
         # structural bar heights
         self.topbar.setFixedHeight(uiscale.sp(62))
         self.bottombar.setFixedHeight(uiscale.sp(52))
-        # views + sidebar
-        for w in (self.sidebar, self.single, self.compare, self.report):
+        # the sidebar auto-fits to the middle-area height (no scrolling)
+        mid_h = self.height() - self.topbar.height() - self.bottombar.height()
+        self.sidebar.apply_scale(s, avail=mid_h)
+        # views
+        for w in (self.single, self.compare, self.report):
             if hasattr(w, "apply_scale"):
                 w.apply_scale(s)
         if self._presentation is not None and hasattr(self._presentation, "apply_scale"):
