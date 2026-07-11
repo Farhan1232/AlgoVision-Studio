@@ -249,7 +249,13 @@ class Sidebar(QScrollArea):
         self._clear_custom_error()
 
     def set_theme(self, theme: Theme) -> None:
+        # Re-apply the sidebar's OWN scoped stylesheet right away.  The sidebar
+        # paints its background from this local stylesheet (not the app-wide
+        # QSS), so without restyling here it kept the previous theme's colour
+        # until the next resize - the "sidebar flashes white for a moment on
+        # theme switch" bug.  Restyling is cheap (one setStyleSheet, no relayout).
         self.theme = theme
+        self._style_at(getattr(self, "_eff_scale", 1.0))
 
     def apply_scale(self, s: float, avail: int | None = None) -> None:
         """Scale the sidebar to fit its available height WITHOUT scrolling.
@@ -270,6 +276,8 @@ class Sidebar(QScrollArea):
 
     def _style_at(self, s: float) -> None:
         """Apply a sidebar-scoped stylesheet + scaled spacing at scale ``s``."""
+        self._eff_scale = s
+
         def f(v):
             return max(7, round(v * s))
 

@@ -42,6 +42,7 @@ class MainWindow(QMainWindow):
         self.dataset_label = "Sample Array"
         self.mode = "single"
         self._presentation: PresentationView | None = None
+        self._theme_dirty: set = set()
         self._scale = 1.0
         # Throttle scale recomputation during continuous resizing/maximizing.
         self._resize_timer = QTimer(self)
@@ -252,9 +253,11 @@ class MainWindow(QMainWindow):
         self.mode = mode
         self.sidebar.set_mode(mode if mode in ("single", "compare") else "single")
         if mode == "single":
+            self._ensure_themed(self.single)
             self.stack.setCurrentIndex(0)
             self._load_single()
         elif mode == "compare":
+            self._ensure_themed(self.compare)
             self.stack.setCurrentIndex(1)
             self._load_compare()
         elif mode == "report":
@@ -338,13 +341,26 @@ class MainWindow(QMainWindow):
     # -- theme --------------------------------------------------------------
     def _toggle_theme(self):
         self.theme = get_theme("light" if self.theme.is_dark else "dark")
+        # 1) app-wide QSS (chrome, cards, buttons) + sidebar restyle - always.
         self.apply_theme()
-        for v in (self.single, self.compare, self.report):
-            v.set_theme(self.theme)
         self.sidebar.set_theme(self.theme)
+        # 2) Only re-theme the view the user is looking at NOW; the others
+        #    (each carrying heavy Matplotlib canvases) are re-themed lazily the
+        #    moment they're shown.  This keeps a theme switch snappy instead of
+        #    redrawing every hidden chart.  The Report is rebuilt from scratch
+        #    whenever it's opened, so it never needs eager re-theming.
+        active = self._active()
+        active.set_theme(self.theme)
+        self._theme_dirty = {self.single, self.compare} - {active}
         if self._presentation:
             self._presentation.set_theme(self.theme)
         self.theme_btn.setText("☀  Theme" if self.theme.is_dark else "☾  Theme")
+
+    def _ensure_themed(self, view) -> None:
+        """Apply a deferred theme change to a view just before it's shown."""
+        if view in getattr(self, "_theme_dirty", set()):
+            view.set_theme(self.theme)
+            self._theme_dirty.discard(view)
 
     def apply_theme(self):
         self.setStyleSheet(build_qss(self.theme, self._scale))

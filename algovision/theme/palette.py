@@ -128,17 +128,20 @@ DARK = Theme(
 LIGHT = Theme(
     key="light",
     name="Light",
-    window_bg="#FFFFFF",
-    sidebar_bg="#FBFCFE",
+    # A soft blue-grey canvas lets the white sidebar and white cards read as
+    # distinct, elevated surfaces (the old all-white palette had no hierarchy
+    # and looked like unstyled default widgets).
+    window_bg="#EEF2F8",
+    sidebar_bg="#FFFFFF",
     panel_bg="#FFFFFF",
-    card_bg="#F8FAFC",
+    card_bg="#FFFFFF",
     canvas_bg="#FFFFFF",
-    elevated_bg="#EFF4FB",
-    text_primary="#1E293B",
-    text_secondary="#546178",
-    text_muted="#8A97AC",
-    border="#E2E8F0",
-    divider="#EDF1F6",
+    elevated_bg="#F1F5FB",
+    text_primary="#17233B",
+    text_secondary="#51607A",
+    text_muted="#8593AB",
+    border="#D3DCEA",
+    divider="#E4EAF3",
     accent="#2563EB",
     accent_2="#7C3AED",
     accent_soft="rgba(124, 58, 237, 0.12)",
@@ -147,7 +150,7 @@ LIGHT = Theme(
     danger="#DC2626",
     block_text="#FFFFFF",
     block_index_text="#64748B",
-    grid="#E2E8F0",
+    grid="#DCE4EF",
 )
 
 THEMES = {"dark": DARK, "light": LIGHT}

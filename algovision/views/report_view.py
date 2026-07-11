@@ -15,7 +15,8 @@ from matplotlib.figure import Figure
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QScrollArea
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QScrollArea,
+    QSizePolicy
 )
 
 from ..theme.palette import Theme, STATE_COLORS, STATE_SORTED, STATE_DEFAULT
@@ -25,11 +26,16 @@ from ..widgets.common import card, card_with_title
 
 
 class _Canvas(FigureCanvas):
-    def __init__(self, theme: Theme, height=2.6):
+    def __init__(self, theme: Theme, height=2.6, min_h=140):
         self.fig = Figure(figsize=(4, height), dpi=100)
         super().__init__(self.fig)
         self.theme = theme
         self.ax = self.fig.add_subplot(111)
+        # Expand to fill the panel but allow shrinking, so the report packs
+        # into the window with minimal scrolling instead of forcing a fixed
+        # (tall) canvas height.
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMinimumHeight(min_h)
         self._bg()
 
     def _bg(self):
@@ -53,8 +59,8 @@ class ReportView(QScrollArea):
         self.body = QWidget()
         self.setWidget(self.body)
         self.v = QVBoxLayout(self.body)
-        self.v.setContentsMargins(16, 14, 16, 16)
-        self.v.setSpacing(12)
+        self.v.setContentsMargins(16, 10, 16, 10)
+        self.v.setSpacing(8)
 
     # -- build --------------------------------------------------------------
     def show_report(self, info, original: list[int], frames: list) -> None:
@@ -67,38 +73,69 @@ class ReportView(QScrollArea):
                 it.widget().deleteLater()
 
         final = frames[-1]
-        t = self.theme
 
-        # title
+        # title + at-a-glance metadata strip
         head = QHBoxLayout()
         title = QLabel("PERFORMANCE REPORT")
         title.setProperty("role", "title")
         head.addWidget(title)
         head.addStretch(1)
+        head.addWidget(self._meta_strip(info, original))
         hw = QWidget(); hw.setLayout(head)
         self.v.addWidget(hw)
 
-        # summary tiles
+        # summary tiles (Execution Summary)
         self.v.addWidget(self._summary_tiles(info, final))
-        # transformation
-        self.v.addWidget(self._transformation(original, final))
-        # comparison across all algorithms
-        self.v.addWidget(self._comparison_chart(original))
-        # execution overview + insights
-        row = QHBoxLayout(); row.setSpacing(12)
-        row.addWidget(self._execution_overview(frames), 1)
-        row.addWidget(self._insights_block(info), 1)
-        rw = QWidget(); rw.setLayout(row)
-        self.v.addWidget(rw)
-        self.v.addStretch(1)
+
+        # Two balanced columns so the four analysis panels fit the window with
+        # minimal scrolling (reworked for the 2nd client revision):
+        #   left  = Array Transformation  +  Execution Overview
+        #   right = Performance Comparison +  Algorithm Insights
+        cols = QHBoxLayout(); cols.setSpacing(12)
+        left = QVBoxLayout(); left.setSpacing(8)
+        left.addWidget(self._transformation(original, final), 3)
+        left.addWidget(self._execution_overview(frames), 4)
+        right = QVBoxLayout(); right.setSpacing(8)
+        right.addWidget(self._comparison_chart(original), 4)
+        right.addWidget(self._insights_block(info), 3)
+        lw = QWidget(); lw.setLayout(left)
+        rw = QWidget(); rw.setLayout(right)
+        cols.addWidget(lw, 1)
+        cols.addWidget(rw, 1)
+        cw = QWidget(); cw.setLayout(cols)
+        self.v.addWidget(cw, 1)
+
+    def _meta_strip(self, info, original) -> QWidget:
+        t = self.theme
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(16)
+        items = [
+            ("Algorithm", info.name, t.accent_2),
+            ("Dataset", "Custom Array", t.text_primary),
+            ("Size", str(len(original)), t.text_primary),
+            ("Value Range", "1 – 1000", t.text_primary),
+        ]
+        for label, value, col in items:
+            cell = QVBoxLayout(); cell.setSpacing(0)
+            k = QLabel(label); k.setProperty("role", "muted")
+            k.setStyleSheet("font-size:10px;")
+            val = QLabel(str(value))
+            val.setStyleSheet(f"font-size:13px; font-weight:700; color:{col};")
+            cell.addWidget(k); cell.addWidget(val)
+            cw = QWidget(); cw.setLayout(cell)
+            h.addWidget(cw)
+        return w
 
     def _tile(self, label, value, sub="", color=None):
         c = card()
         v = QVBoxLayout(c)
-        v.setContentsMargins(14, 10, 14, 10)
+        v.setContentsMargins(14, 8, 14, 8)
+        v.setSpacing(2)
         lab = QLabel(label); lab.setProperty("role", "muted")
         val = QLabel(str(value))
-        val.setStyleSheet(f"font-size:22px; font-weight:800; color:{color or self.theme.accent_2};")
+        val.setStyleSheet(f"font-size:20px; font-weight:800; color:{color or self.theme.accent_2};")
         v.addWidget(lab); v.addWidget(val)
         if sub:
             s = QLabel(sub); s.setProperty("role", "muted"); v.addWidget(s)
@@ -125,7 +162,7 @@ class ReportView(QScrollArea):
 
     def _transformation(self, original, final):
         frame, lay = card_with_title("Array Transformation (Initial → Sorted)")
-        canvas = _Canvas(self.theme, height=2.0)
+        canvas = _Canvas(self.theme, height=1.35, min_h=104)
         ax = canvas.ax
         ax.clear(); ax.axis("off")
         n = len(original)
@@ -152,7 +189,7 @@ class ReportView(QScrollArea):
             f = info.trace(list(original))[-1]
             results.append((info.name, f.comparisons, f.swaps, frame_exec_seconds(f)))
 
-        canvas = _Canvas(self.theme, height=3.0)
+        canvas = _Canvas(self.theme, height=1.95, min_h=175)
         ax = canvas.ax
         ax.clear()
         names = [r[0] for r in results]
@@ -168,10 +205,12 @@ class ReportView(QScrollArea):
         for spine in ax.spines.values():
             spine.set_color(self.theme.border)
         ax.set_xlabel("Comparisons", color=self.theme.text_secondary, fontsize=9)
+        # headroom on the right so the compact annotations never clip
+        ax.set_xlim(0, max(comps) * 1.6 if comps else 1)
         for i, r in enumerate(results):
-            ax.text(r[1], i, f"  {r[1]} · {r[2]} sw · {r[3]:.3f}s",
-                    va="center", color=self.theme.text_secondary, fontsize=8)
-        canvas.fig.subplots_adjust(left=0.22, right=0.98, top=0.95, bottom=0.15)
+            ax.text(r[1], i, f"  {r[1]} · {r[2]}sw · {r[3]:.2f}s",
+                    va="center", color=self.theme.text_secondary, fontsize=7.5)
+        canvas.fig.subplots_adjust(left=0.24, right=0.99, top=0.95, bottom=0.18)
         canvas._bg()
         canvas.draw_idle()
         lay.addWidget(canvas)
@@ -183,7 +222,7 @@ class ReportView(QScrollArea):
 
     def _execution_overview(self, frames):
         frame, lay = card_with_title("Execution Overview")
-        canvas = _Canvas(self.theme, height=2.8)
+        canvas = _Canvas(self.theme, height=1.9, min_h=140)
         ax = canvas.ax
         ax.clear()
         xs = [f.op_number for f in frames]

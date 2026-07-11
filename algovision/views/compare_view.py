@@ -5,10 +5,13 @@ Step, Restart, Reset, Timeline and Speed affect both sides simultaneously so
 the comparison is fair.  A shared Performance Summary highlights the algorithm
 that finished more efficiently.
 
-Layout notes: every panel is sized to stay fully visible without scrolling -
-each side has a compact header (no overlapping text), a scaling Numbered Block
-View, a live stats strip and a synchronized Code Viewer, and both sides share a
-Timeline scrubber and Performance Summary beneath them.
+Layout notes (reworked for the 2nd client revision - readability for classroom
+use): the Timeline scrubber is integrated into the Performance Summary strip at
+the foot of the view, which frees the whole middle band for the educational
+panels.  Each side therefore carries a compact header, a scaling Numbered Block
+View, a live explanation and a *tall* row of three panels - Statistics, Code
+Viewer and Algorithm Insights - so the pseudocode and stats are comfortably
+readable without constant scrolling.
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QComboBox,
-    QProgressBar, QSizePolicy
+    QProgressBar, QSizePolicy, QScrollArea, QFrame
 )
 
 from ..theme.palette import Theme
@@ -30,62 +33,148 @@ from ..theme.palette import LEGEND_STANDARD, STATE_PIVOT, STATE_SELECTED
 
 
 class _MiniStats(QWidget):
-    """Compact live-stats strip for one comparison workspace.
+    """Compact *horizontal* live-stats strip for one comparison workspace.
 
-    Shows the two comparison counters plus a thin progress bar; overall
-    position is also reflected by the shared Timeline scrubber below.
+    Laid out as a row of value/label cells plus a thin progress bar, so the
+    Statistics panel stays short and the tall Code Viewer / Algorithm Insights
+    panels get the full workspace width beneath it.
     """
 
     def __init__(self, theme: Theme, parent=None):
         super().__init__(parent)
         self.theme = theme
-        self._labels: dict[str, QLabel] = {}
+        self._vals: dict[str, QLabel] = {}
+        self._keys: list[QLabel] = []
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(4)
+        lay.setSpacing(7)
 
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(8)
-        grid.setVerticalSpacing(3)
-        grid.setColumnStretch(1, 1)
-        for r, key in enumerate(["Comparisons", "Swaps"]):
+        cells = QHBoxLayout()
+        cells.setSpacing(10)
+        for key in ("Comparisons", "Swaps", "Time"):
+            col = QVBoxLayout(); col.setSpacing(1)
+            v = QLabel("—")
+            v.setStyleSheet(f"font-size:{uiscale.fs(17)}px; font-weight:800; "
+                            f"color:{theme.text_primary};")
             k = QLabel(key); k.setProperty("role", "muted")
-            v = QLabel("—"); v.setProperty("role", "value")
-            v.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            grid.addWidget(k, r, 0)
-            grid.addWidget(v, r, 1)
-            self._labels[key] = v
-        lay.addLayout(grid)
+            k.setStyleSheet(f"font-size:{uiscale.fs(10)}px;")
+            col.addWidget(v); col.addWidget(k)
+            cells.addLayout(col)
+            cells.addStretch(1)
+            self._vals[key] = v
+            self._keys.append(k)
+        lay.addLayout(cells)
 
         self.progress = QProgressBar()
         self.progress.setRange(0, 100); self.progress.setValue(0)
         self.progress.setTextVisible(False)
-        self.progress.setFixedHeight(10)
+        self.progress.setFixedHeight(8)
         lay.addWidget(self.progress)
-        lay.addStretch(1)
 
     def clear(self):
-        for v in self._labels.values():
+        for v in self._vals.values():
             v.setText("—")
         self.progress.setValue(0)
 
     def update_from(self, frame, total: int):
         if frame is None:
             return
-        self._labels["Comparisons"].setText(str(frame.comparisons))
-        self._labels["Swaps"].setText(str(frame.swaps))
+        self._vals["Comparisons"].setText(str(frame.comparisons))
+        self._vals["Swaps"].setText(str(frame.swaps))
+        self._vals["Time"].setText(f"{frame_exec_seconds(frame):.3f}s")
         self.progress.setValue(int(round(100 * frame.op_number / max(1, total))))
 
     def apply_scale(self, s: float):
-        self.progress.setFixedHeight(uiscale.sp(10))
+        self.progress.setFixedHeight(uiscale.sp(8))
+        for v in self._vals.values():
+            v.setStyleSheet(f"font-size:{uiscale.fs(17)}px; font-weight:800; "
+                            f"color:{self.theme.text_primary};")
+        for k in self._keys:
+            k.setStyleSheet(f"font-size:{uiscale.fs(10)}px;")
 
     def set_theme(self, theme: Theme):
         self.theme = theme
+        self.apply_scale(uiscale.get_scale())
+
+
+class _CompactInsights(QScrollArea):
+    """A short, scrollable Algorithm-Insights panel for one comparison side.
+
+    Shows the essentials a learner needs while comparing - overview, the three
+    complexity classes, stability and the key takeaway - word-wrapped so it
+    reads comfortably at the narrow comparison width.
+    """
+
+    def __init__(self, theme: Theme, parent=None):
+        super().__init__(parent)
+        self.theme = theme
+        self._info = None
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setStyleSheet("background:transparent;")
+        self.body = QWidget()
+        self.vbox = QVBoxLayout(self.body)
+        self.vbox.setContentsMargins(0, 0, 6, 0)
+        self.vbox.setSpacing(7)
+        self.setWidget(self.body)
+
+    def set_info(self, info) -> None:
+        self._info = info
+        t = self.theme
+        while self.vbox.count():
+            it = self.vbox.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        acc = t.accent
+        rows = [
+            ("ℹ️", "Overview", info.overview),
+            ("⏱️", "Time Complexity",
+             f"Best <span style='color:{acc}'>{info.best}</span> · "
+             f"Average <span style='color:{acc}'>{info.average}</span> · "
+             f"Worst <span style='color:{acc}'>{info.worst}</span>"),
+            ("🧠", "Space Complexity", f"<span style='color:{t.success}'>{info.space}</span>"),
+            ("🔒", "Stable", ("<span style='color:%s'>Yes</span>" % t.success) if info.stable
+             else ("<span style='color:%s'>No</span>" % t.danger)),
+            ("🎯", "Best Used For", info.best_used_for),
+            ("💡", "Key Idea", info.key_idea),
+        ]
+        fs = uiscale.fs(11)
+        for icon, label, value in rows:
+            w = QWidget()
+            row = QHBoxLayout(w)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(7)
+            ic = QLabel(icon); ic.setFixedWidth(uiscale.sp(16))
+            ic.setAlignment(Qt.AlignmentFlag.AlignTop)
+            ic.setStyleSheet(f"font-size:{fs}px;")
+            text = QLabel()
+            text.setTextFormat(Qt.TextFormat.RichText)
+            text.setWordWrap(True)
+            text.setStyleSheet(f"font-size:{fs}px;")
+            text.setText(
+                f"<span style='color:{t.text_primary}; font-weight:600'>{label}</span>"
+                f"<br><span style='color:{t.text_secondary}'>{value}</span>")
+            row.addWidget(ic)
+            row.addWidget(text, 1)
+            self.vbox.addWidget(w)
+        self.vbox.addStretch(1)
+
+    def apply_scale(self, s: float) -> None:
+        if self._info:
+            self.set_info(self._info)
+
+    def set_theme(self, theme: Theme) -> None:
+        self.theme = theme
+        if self._info:
+            self.set_info(self._info)
 
 
 class _Mini(QWidget):
-    """One comparison workspace: header + array view + stats + code."""
+    """One comparison workspace: header + array view + stats/code/insights."""
 
     def __init__(self, theme: Theme, parent=None):
         super().__init__(parent)
@@ -100,7 +189,7 @@ class _Mini(QWidget):
         c = card()
         outer = QVBoxLayout(c)
         outer.setContentsMargins(12, 10, 12, 10)
-        outer.setSpacing(7)
+        outer.setSpacing(8)
 
         # header - name / badge on the left, step counter on the right; the
         # name elides instead of overlapping the badge or step counter.
@@ -116,36 +205,50 @@ class _Mini(QWidget):
         head.addWidget(self.steps)
         outer.addLayout(head)
 
-        # The array is the ONLY vertically-flexible element in a workspace, so
-        # when the window is short it shrinks (matplotlib just redraws smaller)
-        # instead of colliding with the panels below it.  The shared colour
-        # legend lives once beneath both workspaces (see CompareView), keeping
-        # each workspace compact and overlap-proof.
+        # The array is capped in height (Expanding, but Maximum policy) so the
+        # tall educational panels below it get the lion's share of the vertical
+        # space - this is the fix for the "middle section too compressed"
+        # feedback: the Code Viewer / Statistics / Insights now dominate.  The
+        # shared colour legend lives once beneath both workspaces (see below).
         self.array = ArrayView(theme)
-        self.array.setMinimumHeight(44)
-        self.array.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        outer.addWidget(self.array, 1)
-        # Adaptive height: shows the full two-line explanation when there is
-        # room (large windows) and compresses gracefully on short screens - the
-        # array (the Expanding element) absorbs the difference first.
+        self.array.setMinimumHeight(58)
+        self.array.setMaximumHeight(120)
+        self.array.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        outer.addWidget(self.array)
+
         self.explanation = ExplanationPanel(theme)
         self.explanation.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         self.explanation.setMinimumHeight(38)
-        self.explanation.setMaximumHeight(70)
+        self.explanation.setMaximumHeight(56)
         outer.addWidget(self.explanation)
 
+        # Statistics as a short horizontal strip so it doesn't steal width from
+        # the two panels that actually need room to be read.
+        sc, sl = card_with_title("Statistics")
+        sl.setContentsMargins(14, 9, 14, 10)
+        self.stats = _MiniStats(theme); sl.addWidget(self.stats)
+        sc.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        outer.addWidget(sc)
+
+        # Code Viewer + Algorithm Insights get the full workspace width and the
+        # remaining height (firm minimum), so pseudocode lines are shown in full
+        # and stats/insights read comfortably - the fix for the "panels too
+        # small / constant scrolling" feedback.  The array (a Maximum-policy
+        # widget) yields its space to this row first.
         bottom_w = QWidget()
         self._bottom_w = bottom_w
-        bottom_w.setFixedHeight(102)
+        bottom_w.setMinimumHeight(190)
+        bottom_w.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         bottom = QHBoxLayout(bottom_w)
         bottom.setContentsMargins(0, 0, 0, 0)
         bottom.setSpacing(8)
-        sc, sl = card_with_title("Statistics")
-        self.stats = _MiniStats(theme); sl.addWidget(self.stats)
         cc, cl = card_with_title("Code Viewer")
-        self.code = CodeViewer(theme); cl.addWidget(self.code)
-        bottom.addWidget(sc, 2); bottom.addWidget(cc, 3)
-        outer.addWidget(bottom_w)
+        self.code = CodeViewer(theme); cl.addWidget(self.code, 1)
+        ic, il = card_with_title("Algorithm Insights")
+        self.insights = _CompactInsights(theme); il.addWidget(self.insights, 1)
+        bottom.addWidget(cc, 1)
+        bottom.addWidget(ic, 1)
+        outer.addWidget(bottom_w, 1)
 
         lay.addWidget(c)
 
@@ -153,6 +256,7 @@ class _Mini(QWidget):
         self.info = info
         self.name.setText(info.name)
         self.code.set_code(info.pseudocode)
+        self.insights.set_info(info)
         self.stats.clear()
 
     def set_frames(self, frames: list) -> None:
@@ -187,11 +291,12 @@ class _Mini(QWidget):
     def apply_scale(self, s: float) -> None:
         self.name.setStyleSheet(
             f"font-size:{uiscale.fs(14)}px; font-weight:700; color:{self.theme.text_primary};")
-        self.array.setMinimumHeight(uiscale.sp(44))
+        self.array.setMinimumHeight(uiscale.sp(58))
+        self.array.setMaximumHeight(uiscale.sp(120))
         self.explanation.setMinimumHeight(uiscale.sp(38))
-        self.explanation.setMaximumHeight(uiscale.sp(70))
-        self._bottom_w.setFixedHeight(uiscale.sp(102))
-        for w in (self.array, self.stats, self.code, self.explanation):
+        self.explanation.setMaximumHeight(uiscale.sp(56))
+        self._bottom_w.setMinimumHeight(uiscale.sp(190))
+        for w in (self.array, self.stats, self.code, self.explanation, self.insights):
             if hasattr(w, "apply_scale"):
                 w.apply_scale(s)
 
@@ -199,7 +304,7 @@ class _Mini(QWidget):
         self.theme = theme
         self.name.setStyleSheet(
             f"font-size:{uiscale.fs(14)}px; font-weight:700; color:{theme.text_primary};")
-        for w in (self.array, self.stats, self.code, self.explanation):
+        for w in (self.array, self.stats, self.code, self.explanation, self.insights):
             w.set_theme(theme)
 
 
@@ -253,7 +358,9 @@ class CompareView(QWidget):
         row.setSpacing(10)
         row.addWidget(self.left, 1)
         row.addWidget(self.right, 1)
-        root.addLayout(row, 3)
+        # The two workspaces take almost all of the height so the Statistics /
+        # Code Viewer / Insights panels inside them are large and readable.
+        root.addLayout(row, 1)
 
         # one shared colour legend for both workspaces (PRD 5.3 visual language)
         self.legend = Legend(theme)
@@ -265,26 +372,27 @@ class CompareView(QWidget):
         leg_row.addStretch(1)
         root.addLayout(leg_row)
 
-        # shared timeline (PRD 7.5 - Timeline Navigation affects both sides).
-        # Plain card - the Timeline widget carries its own "Operation N" label.
-        tl_card = card()
-        tl_lay = QVBoxLayout(tl_card)
-        tl_lay.setContentsMargins(14, 6, 14, 8)
-        tl_lay.setSpacing(2)
-        self.timeline = Timeline(theme, style="bar")
-        self.timeline.seekRequested.connect(self.seek)
-        tl_lay.addWidget(self.timeline)
-        root.addWidget(tl_card)
-
+        # Performance Summary WITH the shared Timeline integrated at its top
+        # (PRD 7.5 - Timeline Navigation affects both sides).  Folding the
+        # scrubber in here reclaimed the dedicated timeline band for the panels.
         root.addWidget(self._build_summary())
 
     def _build_summary(self) -> QWidget:
-        frame, lay = card_with_title("Performance Summary")
-        lay.setContentsMargins(14, 6, 14, 8)
-        lay.setSpacing(4)
+        frame, lay = card_with_title("Performance Summary & Timeline")
+        lay.setContentsMargins(14, 8, 14, 10)
+        lay.setSpacing(6)
+
+        # integrated shared timeline scrubber
+        self.timeline = Timeline(self.theme, style="bar")
+        self.timeline.seekRequested.connect(self.seek)
+        lay.addWidget(self.timeline)
+
+        div = QFrame(); div.setProperty("role", "divider"); div.setFixedHeight(1)
+        lay.addWidget(div)
+
         self.summary_grid = QGridLayout()
         self.summary_grid.setHorizontalSpacing(18)
-        self.summary_grid.setVerticalSpacing(2)
+        self.summary_grid.setVerticalSpacing(3)
         holder = QWidget()
         holder.setLayout(self.summary_grid)
         lay.addWidget(holder)

@@ -66,11 +66,16 @@ class CodeViewer(QWidget):
     def highlight(self, line_indices) -> None:
         self._active = set(line_indices or ())
         self._restyle()
-        # scroll the first highlighted line into view
+        # scroll the first highlighted line into view (vertically only)
         for idx in sorted(self._active):
             if 0 <= idx < len(self._row_widgets):
                 self.scroll.ensureWidgetVisible(self._row_widgets[idx][0], 0, 40)
                 break
+        # Keep the code left-aligned: ensureWidgetVisible can nudge the view
+        # sideways in a narrow panel (e.g. Comparison Mode), which would show
+        # only the right half of each line.  Pin the horizontal scroll to 0 so
+        # every line always reads from its start.
+        self.scroll.horizontalScrollBar().setValue(0)
 
     def set_theme(self, theme: Theme) -> None:
         self.theme = theme
