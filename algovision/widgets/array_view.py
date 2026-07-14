@@ -14,7 +14,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.patches import FancyBboxPatch
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import pyqtSignal, QTimer
 from PyQt6.QtWidgets import QWidget, QVBoxLayout
 
 from ..theme.palette import Theme, STATE_COLORS, STATE_DEFAULT, STATE_DISABLED
@@ -41,6 +41,24 @@ class ArrayView(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self.canvas)
         self._apply_bg()
+
+        # Matplotlib text is sized in fixed points, but the canvas shrinks when
+        # the window is compressed - so the font (and thus the block values)
+        # must be recomputed on every resize, not only on a frame change, or the
+        # values overflow their blocks on a short/narrow window.  Debounced so a
+        # continuous drag doesn't redraw on every pixel.
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(45)
+        self._resize_timer.timeout.connect(self._rerender)
+
+    def resizeEvent(self, e):  # noqa: N802
+        super().resizeEvent(e)
+        self._resize_timer.start()
+
+    def _rerender(self) -> None:
+        if self._frame is not None:
+            self.render(self._frame)
 
     # -- public API ---------------------------------------------------------
     def set_theme(self, theme: Theme) -> None:
@@ -94,7 +112,27 @@ class ArrayView(QWidget):
         elif max_digits == 3:
             base_fs *= 0.9
 
-        idx_fs = max(5.5, base_fs * 0.62)
+        # Cap the font to the *physical* block width so the value always fits
+        # inside its block instead of overlapping its neighbours.  This matters
+        # on a compressed window and in the narrow Comparison-Mode workspaces,
+        # where each block is only a few pixels wide (PRD 5.6 - "blocks never
+        # overlap").  Recomputed on every resize via resizeEvent above.
+        canvas_px = max(1, self.canvas.width())
+        step_px = canvas_px / max(1, n)           # pixels per block+gap
+        block_px = step_px * (width / step)       # pixels of the block itself
+        # a digit is ~0.6*fontsize wide (points); keep max_digits within ~88%
+        # of the block, converting points<->pixels via the figure dpi.
+        max_fs = (0.88 * block_px * 72.0 / self.figure.dpi) / (0.6 * max_digits)
+        base_fs = max(4.0, min(base_fs, max_fs))
+
+        idx_digits = max(1, len(str(n - 1)))
+        idx_cap = (0.9 * step_px * 72.0 / self.figure.dpi) / (0.6 * idx_digits)
+        idx_fs = max(4.5, min(base_fs * 0.62, idx_cap))
+        # When the array is so dense that consecutive index labels would collide,
+        # show only every Nth index (plus the last) instead of an unreadable
+        # smear - the Position Indicator stays legible (PRD 5.6).
+        idx_label_px = idx_digits * 0.6 * idx_fs * self.figure.dpi / 72.0
+        idx_stride = max(1, int(round((idx_label_px + 3.0) / max(1.0, step_px))))
         radius = 0.14 if n <= 40 else 0.08
 
         # Heap Sort: positions past the heap boundary are "out of heap" (gray)
@@ -126,12 +164,14 @@ class ArrayView(QWidget):
                 ha="center", va="center", color=self.theme.block_text,
                 fontsize=base_fs, fontweight="bold", zorder=3,
             )
-            # fixed Position Indicator (index) beneath the block
-            self.ax.text(
-                x + width / 2, -0.42, str(i),
-                ha="center", va="center", color=self.theme.block_index_text,
-                fontsize=idx_fs, zorder=3,
-            )
+            # fixed Position Indicator (index) beneath the block - thinned out
+            # on very dense arrays so the labels stay readable (see idx_stride)
+            if i % idx_stride == 0 or i == n - 1:
+                self.ax.text(
+                    x + width / 2, -0.42, str(i),
+                    ha="center", va="center", color=self.theme.block_index_text,
+                    fontsize=idx_fs, zorder=3,
+                )
 
         # merge-sort group brackets ----------------------------------------
         if frame.groups:

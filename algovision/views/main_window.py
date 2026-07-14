@@ -27,7 +27,7 @@ from ..resources import assets_dir
 from .single_view import SingleView
 from .compare_view import CompareView
 from .report_view import ReportView
-from .presentation_view import PresentationView
+from .presentation_view import PresentationView, ComparisonPresentationView
 from .edit_array_dialog import EditArrayDialog
 
 ASSETS = assets_dir()
@@ -41,7 +41,8 @@ class MainWindow(QMainWindow):
         self.dataset = list(DEFAULT_DATASET)
         self.dataset_label = "Sample Array"
         self.mode = "single"
-        self._presentation: PresentationView | None = None
+        self._report_origin = "single"
+        self._presentation: PresentationView | ComparisonPresentationView | None = None
         self._theme_dirty: set = set()
         self._scale = 1.0
         # Throttle scale recomputation during continuous resizing/maximizing.
@@ -211,7 +212,7 @@ class MainWindow(QMainWindow):
         self.load_btn.clicked.connect(self._load_session)
 
         self.report.runAgainRequested.connect(self._run_again)
-        self.report.backRequested.connect(lambda: self._set_mode("single"))
+        self.report.backRequested.connect(lambda: self._set_mode(self._report_origin))
         self.report.exportRequested.connect(self._export)
 
     def _install_shortcuts(self):
@@ -276,13 +277,17 @@ class MainWindow(QMainWindow):
         elif action == "reset":
             view.reset()
         elif action == "toggle":
-            if self.single.player.is_playing():
-                self.single.pause()
+            # Space in Presentation Mode toggles the ACTIVE workspace's clock.
+            if self.mode == "compare":
+                self.compare.pause() if self.compare.is_playing() else self.compare.play()
             else:
-                self.single.play()
+                self.single.pause() if self.single.player.is_playing() else self.single.play()
         elif action == "prev":
-            p = self.single.player
-            p.seek(max(0, p.index - 1))
+            if self.mode == "compare":
+                self.compare.prev()
+            else:
+                p = self.single.player
+                p.seek(max(0, p.index - 1))
 
     def _on_random(self):
         size = self.sidebar.current_size()
@@ -405,9 +410,15 @@ class MainWindow(QMainWindow):
 
     # -- presentation -------------------------------------------------------
     def _enter_presentation(self):
-        if self.mode != "single":
-            self._set_mode("single")
-            self.sidebar.set_mode("single")
+        # Presentation Mode reflects the ACTIVE workspace: if the user is
+        # comparing two algorithms, present the live comparison; otherwise
+        # present the single-algorithm player.  (Report mode falls back to the
+        # workspace the report was opened from.)
+        present_compare = self.mode == "compare"
+        if self.mode not in ("single", "compare"):
+            present_compare = self._report_origin == "compare"
+            self._set_mode("compare" if present_compare else "single")
+            self.sidebar.set_mode("compare" if present_compare else "single")
         # Presentation is fullscreen: scale it to the actual screen size.
         screen = QGuiApplication.primaryScreen()
         if screen is not None:
@@ -416,10 +427,16 @@ class MainWindow(QMainWindow):
         else:
             pv_scale = self._scale
         uiscale.set_scale(pv_scale)
-        pv = PresentationView(self.theme)
-        pv.setStyleSheet(build_qss(self.theme, pv_scale))
-        pv.apply_scale(pv_scale)
-        pv.bind(self.single)
+        if present_compare:
+            pv = ComparisonPresentationView(self.theme)
+            pv.setStyleSheet(build_qss(self.theme, pv_scale))
+            pv.apply_scale(pv_scale)
+            pv.bind(self.compare)
+        else:
+            pv = PresentationView(self.theme)
+            pv.setStyleSheet(build_qss(self.theme, pv_scale))
+            pv.apply_scale(pv_scale)
+            pv.bind(self.single)
         pv.exitRequested.connect(self._exit_presentation)
         pv.controlTriggered.connect(self._on_control)
         pv.speedDelta.connect(self._on_speed_delta)
@@ -443,9 +460,24 @@ class MainWindow(QMainWindow):
 
     # -- report / export ----------------------------------------------------
     def _show_report(self):
-        info = registry.get(self.algorithm_key)
-        frames = info.trace(list(self.dataset))
-        self.report.show_report(info, self.dataset, frames)
+        # Remember where the report was opened FROM, so re-opening it (the mode
+        # is now "report") still reflects the correct workspace, and "Back to
+        # Studio" returns there.
+        origin = self.mode if self.mode in ("single", "compare") else self._report_origin
+        self._report_origin = origin
+        if origin == "compare":
+            # Rebuild from the CURRENT comparison every time, so a different pair
+            # of algorithms updates the report (PRD 8.4) instead of showing the
+            # previous Single-Algorithm results.
+            info_a = self.compare.left.info
+            info_b = self.compare.right.info
+            self.report.show_comparison_report(
+                info_a, info_b, self.compare.original,
+                self.compare.left.frames, self.compare.right.frames)
+        else:
+            info = registry.get(self.algorithm_key)
+            frames = info.trace(list(self.dataset))
+            self.report.show_report(info, self.dataset, frames)
         self.mode = "report"
         self.stack.setCurrentIndex(2)
 

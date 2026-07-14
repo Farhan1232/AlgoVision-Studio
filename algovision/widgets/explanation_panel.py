@@ -20,8 +20,9 @@ class ExplanationPanel(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
 
         self.box = info_box()
-        row = QHBoxLayout(self.box)
-        row.setContentsMargins(14, 12, 14, 12)
+        self._row = QHBoxLayout(self.box)
+        row = self._row
+        row.setContentsMargins(14, 10, 14, 10)
         row.setSpacing(12)
 
         self.icon = QLabel("ℹ️")
@@ -57,7 +58,13 @@ class ExplanationPanel(QWidget):
 
     def _restyle(self) -> None:
         t = self.theme
-        self.icon.setStyleSheet(f"font-size:{uiscale.fs(18)}px;")
+        # Scale the padding with the UI so the two lines of text are never
+        # clipped on a small window (the box used to keep fixed 12px padding
+        # while the font shrank, cutting the text off top and bottom).
+        self._row.setContentsMargins(
+            uiscale.sp(14), uiscale.sp(9), uiscale.sp(14), uiscale.sp(9))
+        self.icon.setStyleSheet(f"font-size:{uiscale.fs(16)}px;")
         self.title.setStyleSheet(
-            f"color:{t.accent_2}; font-weight:700; font-size:{uiscale.fs(14)}px;")
-        self.detail.setStyleSheet(f"color:{t.text_secondary};")
+            f"color:{t.accent_2}; font-weight:700; font-size:{uiscale.fs(13)}px;")
+        self.detail.setStyleSheet(
+            f"color:{t.text_secondary}; font-size:{uiscale.fs(11)}px;")

@@ -25,7 +25,11 @@ class CodeViewer(QWidget):
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Long pseudocode lines word-wrap onto the next line (see below) instead
+        # of running off the right edge, so nothing is ever clipped - the fix for
+        # the "Code Viewer clips long pseudocode" feedback.  Only vertical
+        # scrolling remains (PRD 8.3 "scrollable pseudocode for longer algorithms").
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.container = QWidget()
         self.vbox = QVBoxLayout(self.container)
         self.vbox.setContentsMargins(4, 4, 4, 4)
@@ -57,6 +61,12 @@ class CodeViewer(QWidget):
             num.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             code = QLabel(text)
             code.setTextFormat(Qt.TextFormat.PlainText)
+            # Wrap long lines so the whole statement is always visible in narrow
+            # panels (e.g. Comparison Mode) rather than being cut off on the right.
+            code.setWordWrap(True)
+            code.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            num.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+            hb.setAlignment(num, Qt.AlignmentFlag.AlignTop)
             hb.addWidget(num)
             hb.addWidget(code, 1)
             self.vbox.insertWidget(self.vbox.count() - 1, row)

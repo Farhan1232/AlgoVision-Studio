@@ -217,9 +217,11 @@ class _Mini(QWidget):
         outer.addWidget(self.array)
 
         self.explanation = ExplanationPanel(theme)
-        self.explanation.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-        self.explanation.setMinimumHeight(38)
-        self.explanation.setMaximumHeight(56)
+        # Size to its content (Preferred) rather than a hard max height, so the
+        # two lines of text are always fully visible even on a small window
+        # instead of being clipped.
+        self.explanation.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        self.explanation.setMinimumHeight(uiscale.sp(50))
         outer.addWidget(self.explanation)
 
         # Statistics as a short horizontal strip so it doesn't steal width from
@@ -293,8 +295,7 @@ class _Mini(QWidget):
             f"font-size:{uiscale.fs(14)}px; font-weight:700; color:{self.theme.text_primary};")
         self.array.setMinimumHeight(uiscale.sp(58))
         self.array.setMaximumHeight(uiscale.sp(120))
-        self.explanation.setMinimumHeight(uiscale.sp(38))
-        self.explanation.setMaximumHeight(uiscale.sp(56))
+        self.explanation.setMinimumHeight(uiscale.sp(50))
         self._bottom_w.setMinimumHeight(uiscale.sp(190))
         for w in (self.array, self.stats, self.code, self.explanation, self.insights):
             if hasattr(w, "apply_scale"):
@@ -311,6 +312,9 @@ class _Mini(QWidget):
 class CompareView(QWidget):
     statusChanged = pyqtSignal(str)
     finished = pyqtSignal()
+    # Emitted at the end of every render with (position, total), so a mirroring
+    # surface (Presentation Mode) can stay in sync with the shared clock.
+    rendered = pyqtSignal(int, int)
 
     def __init__(self, theme: Theme, parent=None):
         super().__init__(parent)
@@ -319,6 +323,8 @@ class CompareView(QWidget):
         self._pos = 0
         self._total = 1
         self._speed = 1.0
+        # The Performance Summary stays empty until a comparison has been run.
+        self._has_run = False
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -354,13 +360,16 @@ class CompareView(QWidget):
 
         self.left = _Mini(theme)
         self.right = _Mini(theme)
+        workspaces = QVBoxLayout()
+        workspaces.setContentsMargins(0, 0, 0, 0)
+        workspaces.setSpacing(7)
         row = QHBoxLayout()
         row.setSpacing(10)
         row.addWidget(self.left, 1)
         row.addWidget(self.right, 1)
         # The two workspaces take almost all of the height so the Statistics /
         # Code Viewer / Insights panels inside them are large and readable.
-        root.addLayout(row, 1)
+        workspaces.addLayout(row, 1)
 
         # one shared colour legend for both workspaces (PRD 5.3 visual language)
         self.legend = Legend(theme)
@@ -370,19 +379,31 @@ class CompareView(QWidget):
         leg_row.addStretch(1)
         leg_row.addWidget(self.legend)
         leg_row.addStretch(1)
-        root.addLayout(leg_row)
+        workspaces.addLayout(leg_row)
 
-        # Performance Summary WITH the shared Timeline integrated at its top
-        # (PRD 7.5 - Timeline Navigation affects both sides).  Folding the
-        # scrubber in here reclaimed the dedicated timeline band for the panels.
-        root.addWidget(self._build_summary())
+        # Client request: arrange the Performance Summary & Timeline VERTICALLY
+        # (a side rail) instead of as a wide horizontal band at the foot.  This
+        # hands the full window height to the two workspaces, so the Code Viewer
+        # and Algorithm Insights panels inside them get much more room.
+        middle = QHBoxLayout()
+        middle.setSpacing(12)
+        wk_holder = QWidget(); wk_holder.setLayout(workspaces)
+        middle.addWidget(wk_holder, 1)
+        middle.addWidget(self._build_summary(), 0)
+        root.addLayout(middle, 1)
 
     def _build_summary(self) -> QWidget:
         frame, lay = card_with_title("Performance Summary & Timeline")
         lay.setContentsMargins(14, 8, 14, 10)
-        lay.setSpacing(6)
+        lay.setSpacing(8)
+        # A fixed-width vertical rail (the client's layout request).
+        frame.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        frame.setMinimumWidth(uiscale.sp(300))
+        frame.setMaximumWidth(uiscale.sp(340))
 
-        # integrated shared timeline scrubber
+        tl_lbl = QLabel("Timeline"); tl_lbl.setProperty("role", "muted")
+        lay.addWidget(tl_lbl)
+        # integrated shared timeline scrubber (PRD 7.5 - drives both sides)
         self.timeline = Timeline(self.theme, style="bar")
         self.timeline.seekRequested.connect(self.seek)
         lay.addWidget(self.timeline)
@@ -390,12 +411,23 @@ class CompareView(QWidget):
         div = QFrame(); div.setProperty("role", "divider"); div.setFixedHeight(1)
         lay.addWidget(div)
 
+        # Empty-state placeholder: shown until a comparison has actually been
+        # run, so the summary does NOT start pre-populated (client feedback #3).
+        self._summary_placeholder = QLabel(
+            "Run the comparison to see the\nPerformance Summary.")
+        self._summary_placeholder.setWordWrap(True)
+        self._summary_placeholder.setProperty("role", "muted")
+        self._summary_placeholder.setAlignment(Qt.AlignmentFlag.AlignTop)
+        lay.addWidget(self._summary_placeholder)
+
         self.summary_grid = QGridLayout()
-        self.summary_grid.setHorizontalSpacing(18)
-        self.summary_grid.setVerticalSpacing(3)
-        holder = QWidget()
-        holder.setLayout(self.summary_grid)
-        lay.addWidget(holder)
+        self.summary_grid.setHorizontalSpacing(uiscale.sp(14))
+        self.summary_grid.setVerticalSpacing(uiscale.sp(6))
+        self._summary_holder = QWidget()
+        self._summary_holder.setLayout(self.summary_grid)
+        self._summary_holder.setVisible(False)
+        lay.addWidget(self._summary_holder)
+        lay.addStretch(1)
         self._summary_frame = frame
         return frame
 
@@ -432,17 +464,22 @@ class CompareView(QWidget):
         self.right.set_frames(fb)
         self._total = max(len(fa), len(fb))
         self._pos = 0
+        # A freshly loaded comparison (new dataset or algorithm pick) has not
+        # been run yet, so the summary starts empty (client feedback #3).
+        self._has_run = False
         self.timeline.configure(self._total, 0)
         self._render()
-        self._update_summary()
+        self._clear_summary()
         self.statusChanged.emit("Reset")
 
     # -- shared clock -------------------------------------------------------
     def play(self):
         if self._pos >= self._total - 1:
             return
+        self._has_run = True
         self._timer.start(max(30, int(BASE_FRAME_MS / self._speed)))
         self.statusChanged.emit("Running")
+        self._render()
 
     def pause(self):
         if self._timer.isActive():
@@ -452,6 +489,7 @@ class CompareView(QWidget):
 
     def step(self):
         self._timer.stop()
+        self._has_run = True
         self._pos = min(self._total - 1, self._pos + 1)
         self._render()
         if self._pos >= self._total - 1:
@@ -461,17 +499,23 @@ class CompareView(QWidget):
 
     def restart(self):
         self._pos = 0
+        self._has_run = True
         self._render()
         self.play()
 
     def reset(self):
+        # Reset restores the initial state AND clears the Performance Summary
+        # back to its empty placeholder (client feedback #4).
         self._timer.stop()
         self._pos = 0
+        self._has_run = False
         self._render()
+        self._clear_summary()
         self.statusChanged.emit("Reset")
 
     def seek(self, pos: int):
         self._timer.stop()
+        self._has_run = True
         self._pos = max(0, min(pos, self._total - 1))
         self._render()
         self.statusChanged.emit("Completed" if self._pos >= self._total - 1 else "Paused")
@@ -483,6 +527,13 @@ class CompareView(QWidget):
 
     def position(self) -> tuple[int, int]:
         return self._pos, self._total
+
+    def is_playing(self) -> bool:
+        return self._timer.isActive()
+
+    def prev(self):
+        """Step one operation backwards on the shared clock."""
+        self.seek(max(0, self._pos - 1))
 
     def _tick(self):
         if self._pos >= self._total - 1:
@@ -502,9 +553,31 @@ class CompareView(QWidget):
         self.right.render_at(self._pos, self._total)
         op = min(self._pos + 1, self._total)
         self.timeline.update_current(self._pos, op, f"Operation {op}")
+        # keep the summary in sync with the shared clock once a run has started
+        if self._has_run:
+            self._update_summary()
+        # let any mirroring surface (Presentation Mode) follow the shared clock
+        self.rendered.emit(self._pos, self._total)
 
     # -- performance summary ------------------------------------------------
+    def _clear_summary(self):
+        """Empty the summary and show the placeholder (no comparison run yet)."""
+        while self.summary_grid.count():
+            it = self.summary_grid.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        self._summary_holder.setVisible(False)
+        self._summary_placeholder.setVisible(True)
+
+    def _current_frame(self, mini):
+        idx = min(self._pos, len(mini.frames) - 1)
+        return mini.frames[idx]
+
     def _update_summary(self):
+        self._summary_placeholder.setVisible(False)
+        self._summary_holder.setVisible(True)
         # rebuild the comparison table (Metric | A | B), highlighting the winner.
         # Remove old cells from the layout synchronously (deleteLater alone is
         # async and would stack the previous table's cells on top when the user
@@ -515,29 +588,34 @@ class CompareView(QWidget):
             if w is not None:
                 w.setParent(None)
                 w.deleteLater()
-        fa = self.left.frames[-1]
-        fb = self.right.frames[-1]
+        # Reflect the CURRENT position (live) so the summary stays synchronized
+        # with the shared clock as the comparison plays.
+        fa = self._current_frame(self.left)
+        fb = self._current_frame(self.right)
         ia, ib = self.left.info, self.right.info
         ta, tb = frame_exec_seconds(fa), frame_exec_seconds(fb)
 
+        # The winner is only meaningful once BOTH algorithms have finished, so
+        # don't crown one mid-run.
+        both_done = (self._pos >= len(self.left.frames) - 1 and
+                     self._pos >= len(self.right.frames) - 1)
         a_ops = fa.comparisons + fa.swaps
         b_ops = fb.comparisons + fb.swaps
-        if (ta, a_ops) < (tb, b_ops):
-            winner, win_a, win_b = ia.name, True, False
-        elif (tb, b_ops) < (ta, a_ops):
-            winner, win_a, win_b = ib.name, False, True
-        else:
-            winner, win_a, win_b = "Tie", False, False
+        win_a = win_b = False
+        if both_done:
+            if (ta, a_ops) < (tb, b_ops):
+                win_a = True
+            elif (tb, b_ops) < (ta, a_ops):
+                win_b = True
 
         t = self.theme
-
         fsz = uiscale.fs(12)
 
         def header(text, win):
-            lbl = QLabel((("🏆  " if win else "") + text) +
-                         ("   ·  more efficient" if win else ""))
+            lbl = QLabel(("🏆 " if win else "") + text)
+            lbl.setWordWrap(True)
             lbl.setStyleSheet(
-                f"font-weight:700; font-size:{fsz}px; "
+                f"font-weight:800; font-size:{fsz}px; "
                 f"color:{t.success if win else t.text_primary};")
             return lbl
 
@@ -564,18 +642,26 @@ class CompareView(QWidget):
         for r, (metric, va, vb) in enumerate(rows, start=1):
             m = QLabel(metric); m.setProperty("role", "muted")
             m.setStyleSheet(f"font-size:{fsz}px;")
+            m.setWordWrap(True)
             g.addWidget(m, r, 0)
             g.addWidget(cell(va, win_a), r, 1)
             g.addWidget(cell(vb, win_b), r, 2)
-        g.setColumnStretch(1, 1)
-        g.setColumnStretch(2, 1)
+        if both_done and not (win_a or win_b):
+            note = QLabel("Both performed equally."); note.setProperty("role", "muted")
+            note.setWordWrap(True)
+            g.addWidget(note, len(rows) + 1, 0, 1, 3)
+        g.setColumnStretch(0, 3)
+        g.setColumnStretch(1, 2)
+        g.setColumnStretch(2, 2)
 
     def apply_scale(self, s: float) -> None:
         self.left.apply_scale(s)
         self.right.apply_scale(s)
         self.timeline.apply_scale(s)
         self.legend.apply_scale(s)
-        if self.left.frames:
+        self._summary_frame.setMinimumWidth(uiscale.sp(300))
+        self._summary_frame.setMaximumWidth(uiscale.sp(340))
+        if self._has_run and self.left.frames:
             self._update_summary()
 
     def set_theme(self, theme: Theme) -> None:
@@ -584,5 +670,5 @@ class CompareView(QWidget):
         self.right.set_theme(theme)
         self.timeline.set_theme(theme)
         self.legend.set_theme(theme)
-        if self.left.frames:
+        if self._has_run and self.left.frames:
             self._update_summary()
